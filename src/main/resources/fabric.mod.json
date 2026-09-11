@@ -6,6 +6,7 @@
 	"description": "Chromium (with H.264/AAC codecs, CinemaMod java-cef build) for Minecraft 26.2. Library for doomscroll.",
 	"authors": ["ayber", "CinemaMod Group (java-cef, binaries)", "DimasKama (MCEF Modern, reference)"],
 	"license": "LGPL-2.1",
+	"icon": "assets/mcef-codec/icon.png",
 	"contact": {
 		"homepage": "https://modrinth.com/mod/mcef-codec"
 	},
