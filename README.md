@@ -1,6 +1,6 @@
 # MCEF Codec
 
-A Chromium browser for Minecraft **26.2**, with the H.264 and AAC codecs that ordinary Chromium builds leave out. It is a library: on its own it renders nothing and adds no items. [Doomscroll](https://modrinth.com/mod/doomscroll) is what uses it.
+A Chromium browser for Minecraft **26.2**, with the H.264 and AAC codecs that ordinary Chromium builds leave out. It is a library: on its own it renders nothing and adds no items. [Doomscroll](https://github.com/menntdev/doomscroll) is what uses it.
 
 - Minecraft **26.2** · Fabric · Java 25 · the browser runs on the client only (the jar also loads on a server, where it does nothing)
 - CEF 126, from the [CinemaMod](https://github.com/CinemaMod/mcef) java-cef build
@@ -44,3 +44,9 @@ LGPL-2.1. The full text is in [COPYING.LESSER](COPYING.LESSER) and inside the ja
 - [WebDisplays](https://github.com/montoyo/webdisplays) by montoyo, released into the public domain — the approach to browser surfaces.
 
 See [NOTICE](NOTICE) for the full attribution list.
+
+## Source and bug reports
+Sources: https://github.com/menntdev/mcef-codec · Issues: https://github.com/menntdev/mcef-codec/issues
+
+This library is LGPL-2.1; the corresponding source for every released build is the tagged commit in
+that repository.

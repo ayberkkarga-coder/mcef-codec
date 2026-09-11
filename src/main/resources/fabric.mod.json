@@ -14,7 +14,9 @@
 	"license": "LGPL-2.1",
 	"icon": "assets/mcef-codec/icon.png",
 	"contact": {
-		"homepage": "https://modrinth.com/mod/mcef-codec"
+		"homepage": "https://modrinth.com/mod/mcef-codec",
+		"sources": "https://github.com/menntdev/mcef-codec",
+		"issues": "https://github.com/menntdev/mcef-codec/issues"
 	},
 	"environment": "*",
 	"entrypoints": {
