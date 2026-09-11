@@ -1,0 +1,51 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+repositories {
+	mavenCentral()
+}
+
+loom {
+	mods {
+		"mcef-codec" {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	// Minecraft'in kendi kutuphanesi (tar.gz acmak icin); calisma zamaninda oyunla gelir
+	compileOnly "org.apache.commons:commons-compress:1.28.0"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = "UTF-8"
+	// java-cef fork eski kod; uyarilar hata olmasin
+	it.options.compilerArgs.addAll(["-Xlint:none", "-nowarn"])
+}
+
+// LGPL geregi lisans metinleri jar'in icinde de bulunmali
+jar {
+	from("LICENSE") { rename { "META-INF/LICENSE" } }
+	from("COPYING.LESSER") { rename { "META-INF/COPYING.LESSER" } }
+	from("LICENSE-java-cef") { rename { "META-INF/LICENSE-java-cef" } }
+	from("NOTICE") { rename { "META-INF/NOTICE" } }
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}

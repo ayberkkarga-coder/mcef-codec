@@ -1,0 +1,40 @@
+mcef-codec — third-party notices
+================================
+
+This library bundles and builds upon third-party code. The notices below are
+reproduced as required by the corresponding licences.
+
+
+1. java-cef (Chromium Embedded Framework Java bindings)
+-------------------------------------------------------
+Source files under `src/main/java/org/cef/**` are derived from java-cef and
+carry the following header:
+
+    Copyright (c) 2013 The Chromium Embedded Framework Authors.
+    All rights reserved. Use of this source code is governed by a BSD-style
+    license that can be found in the LICENSE file.
+
+The referenced BSD-style licence is reproduced in full in `LICENSE-java-cef`.
+These files have been modified for Minecraft 26.2 and Java 25.
+
+
+2. MCEF / MCEF Modern
+---------------------
+The overall design of this library follows MCEF (CinemaMod Group) and
+MCEF Modern (DimasKama), both LGPL-2.1. Where code is derived from them, the
+LGPL-2.1 terms apply; see `LICENSE`.
+
+
+3. Chromium binaries
+--------------------
+Chromium / CEF binaries, including builds with proprietary H.264 and AAC
+codecs, are NOT distributed with this jar. They are downloaded at runtime from
+the CinemaMod distribution server onto the user's machine. Those binaries are
+covered by their own licences, including the Chromium licence and the licences
+of the codecs they contain.
+
+
+4. WebDisplays
+--------------
+Parts of the browser-surface handling take their approach from WebDisplays by
+montoyo, which its author released into the public domain.
