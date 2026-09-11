@@ -83,9 +83,36 @@ public final class CefRuntime implements CefService {
 		return instance;
 	}
 
+	/**
+	 * Ekranlarin paylastigi gecici istek baglami: cerezler bellekte kalir, diske yazilmaz.
+	 * Ekran basina ayri baglam verilebilirdi ama CEF her baglam icin ayri bir render sureci
+	 * acar; onlarca ekranda bu makineyi dize getirir. Tek ortak gecici baglam,
+	 * "tabletimdeki oturumum baskasinin actigi sayfayla karismasin" isini goruyor.
+	 */
+	private static volatile org.cef.browser.CefRequestContext ephemeralContext;
+
+	private static org.cef.browser.CefRequestContext ephemeralContext() {
+		org.cef.browser.CefRequestContext c = ephemeralContext;
+		if (c == null) {
+			synchronized (LOCK) {
+				c = ephemeralContext;
+				if (c == null) {
+					try {
+						c = org.cef.browser.CefRequestContext.createContext(null);
+					} catch (Throwable t) {
+						CefNatives.LOGGER.warn("gecici istek baglami olusturulamadi, ortak profil kullanilacak: {}", t.toString());
+						c = null;
+					}
+					ephemeralContext = c;
+				}
+			}
+		}
+		return c;
+	}
+
 	@Override
-	public CefBrowserView createBrowser(String url, boolean transparent) {
-		OsrBrowser b = new OsrBrowser(this, client, url, transparent);
+	public CefBrowserView createBrowser(String url, boolean transparent, boolean ephemeral) {
+		OsrBrowser b = new OsrBrowser(this, client, url, transparent, ephemeral ? ephemeralContext() : null);
 		b.setCloseAllowed();
 		b.createImmediately();
 		// CEF, "gizli" saydigi OSR tarayicisinda icerigi rasterlestirmez (sadece arka plan).

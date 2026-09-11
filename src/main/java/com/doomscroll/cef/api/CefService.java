@@ -19,7 +19,18 @@ public interface CefService {
 	}
 
 	/** Yeni tarayici. Sadece render is parcaciginda ve hazir olduktan sonra cagrilmali. */
-	CefBrowserView createBrowser(String url, boolean transparent);
+	default CefBrowserView createBrowser(String url, boolean transparent) {
+		return createBrowser(url, transparent, false);
+	}
+
+	/**
+	 * Yeni tarayici.
+	 *
+	 * @param ephemeral true ise cerezler ve oturum diske yazilmayan, kalici profilden ayri
+	 *                  ortak bir baglamda tutulur. Baskasinin actigi bir sayfanin senin giris
+	 *                  yaptigin oturumla ayni baglamda calismamasi icin.
+	 */
+	CefBrowserView createBrowser(String url, boolean transparent, boolean ephemeral);
 
 	/** Sayfa disi is: mesaj dongusunu pompalar (mixin cagirir). */
 	void pump();

@@ -292,8 +292,9 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		}
 	}
 
-	OsrBrowser(CefRuntime runtime, CefClient client, String url, boolean transparent) {
-		super(client, url, transparent, null, frameRateSettings());
+	OsrBrowser(CefRuntime runtime, CefClient client, String url, boolean transparent,
+			org.cef.browser.CefRequestContext context) {
+		super(client, url, transparent, context, frameRateSettings());
 		this.runtime = runtime;
 	}
 
