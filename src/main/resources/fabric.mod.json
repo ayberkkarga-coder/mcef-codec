@@ -4,18 +4,29 @@
 	"version": "${version}",
 	"name": "MCEF Codec",
 	"description": "Chromium (with H.264/AAC codecs, CinemaMod java-cef build) for Minecraft 26.2. Library for doomscroll.",
-	"authors": ["ayber", "CinemaMod Group (java-cef, binaries)", "DimasKama (MCEF Modern, reference)"],
+	"authors": [
+		"ayber"
+	],
+	"contributors": [
+		"CinemaMod Group (java-cef, binaries)",
+		"DimasKama (MCEF Modern, reference)"
+	],
 	"license": "LGPL-2.1",
 	"icon": "assets/mcef-codec/icon.png",
 	"contact": {
 		"homepage": "https://modrinth.com/mod/mcef-codec"
 	},
-	"environment": "client",
+	"environment": "*",
 	"entrypoints": {
-		"client": ["com.doomscroll.cef.McefCodecClient"]
+		"client": [
+			"com.doomscroll.cef.McefCodecClient"
+		]
 	},
 	"mixins": [
-		{ "config": "mcef-codec.mixins.json", "environment": "client" }
+		{
+			"config": "mcef-codec.mixins.json",
+			"environment": "client"
+		}
 	],
 	"depends": {
 		"fabricloader": ">=0.19.0",

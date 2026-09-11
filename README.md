@@ -1,8 +1,8 @@
 # MCEF Codec
 
-A Chromium browser for Minecraft **26.2**, with the H.264 and AAC codecs that ordinary Chromium builds leave out. It is a library: on its own it renders nothing and adds no items. [Doomscroll](../doomscroll) is what uses it.
+A Chromium browser for Minecraft **26.2**, with the H.264 and AAC codecs that ordinary Chromium builds leave out. It is a library: on its own it renders nothing and adds no items. [Doomscroll](https://modrinth.com/mod/doomscroll) is what uses it.
 
-- Minecraft **26.2** · Fabric · Java 25 · client only
+- Minecraft **26.2** · Fabric · Java 25 · the browser runs on the client only (the jar also loads on a server, where it does nothing)
 - CEF 126, from the [CinemaMod](https://github.com/CinemaMod/mcef) java-cef build
 - Off-screen rendering straight into a GPU texture, browser audio delivered as PCM for the game to place in the world
 
