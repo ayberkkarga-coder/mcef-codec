@@ -1,6 +1,26 @@
 mcef-codec — third-party notices
 ================================
 
+0. This library
+---------------
+mcef-codec is licensed under the GNU Lesser General Public License, version 2.1
+(LGPL-2.1), following its upstream projects MCEF (CinemaMod Group) and MCEF
+Modern (DimasKama).
+
+The full text of the licence is in LICENSE and COPYING.LESSER, next to this
+file and inside the jar under META-INF/.
+
+Bundled third-party code carries its own terms. In particular, the java-cef
+sources under src/main/java/org/cef/** are BSD-licensed; their licence is
+reproduced in full in LICENSE-java-cef.
+
+Chromium / CEF binaries are not distributed with this jar. They are downloaded
+at runtime and carry their own licences, including the licences of the H.264
+and AAC codecs they contain.
+
+See NOTICE for the complete attribution list.
+
+
 This library bundles and builds upon third-party code. The notices below are
 reproduced as required by the corresponding licences.
 
