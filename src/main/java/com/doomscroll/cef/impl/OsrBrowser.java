@@ -362,6 +362,17 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_PRESS, event.key(), (char) event.key(), event.modifiers());
 		e.scancode = event.scancode(); // input() GLFW tus kodudur; native Windows tusunu scancode'dan turetir
 		sendKeyEvent(e);
+		sendEnterChar(event.key(), event.modifiers());
+	}
+
+	/**
+	 * Enter icin karakter olayi. GLFW Enter'da char callback uretmez, Chromium ise formu
+	 * "keypress \r" ile gonderir; bu olmadan arama kutularinda Enter hicbir sey yapmiyordu.
+	 */
+	private void sendEnterChar(int glfwKey, int modifiers) {
+		if (glfwKey == GLFW.GLFW_KEY_ENTER || glfwKey == GLFW.GLFW_KEY_KP_ENTER) {
+			sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, '\r', '\r', modifiers));
+		}
 	}
 
 	@Override
@@ -377,6 +388,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		CefKeyEvent down = new CefKeyEvent(CefKeyEvent.KEY_PRESS, glfwKey, (char) glfwKey, 0);
 		down.scancode = scan;
 		sendKeyEvent(down);
+		sendEnterChar(glfwKey, 0);
 		CefKeyEvent up = new CefKeyEvent(CefKeyEvent.KEY_RELEASE, glfwKey, (char) glfwKey, 0);
 		up.scancode = scan;
 		sendKeyEvent(up);
