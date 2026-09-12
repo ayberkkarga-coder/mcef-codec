@@ -330,18 +330,31 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		};
 	}
 
+	/**
+	 * Native taraf (CinemaMod java-cef, GetCefModifiersGlfw) ayni alanda hem GLFW klavye
+	 * degistiricilerini (Shift 1, Ctrl 2, Alt 4, Super 8) hem de 0x10/0x20/0x40'i fare tusu
+	 * maskesi olarak okur. GLFW'de 0x10 Caps Lock, 0x20 Num Lock: filtrelenmezse Caps Lock
+	 * acikken her tus olayi "sol fare basili" diye gidiyordu.
+	 */
+	private static int keyMods(int glfwModifiers) {
+		return glfwModifiers & (GLFW.GLFW_MOD_SHIFT | GLFW.GLFW_MOD_CONTROL | GLFW.GLFW_MOD_ALT | GLFW.GLFW_MOD_SUPER);
+	}
+
 	@Override
 	public void onMouseClicked(MouseButtonEvent event, boolean doubled) {
 		int b = toCefButton(event.button());
 		buttonMask |= maskFor(b);
-		sendMouseEvent(new CefMouseEvent(GLFW.GLFW_PRESS, (int) event.x(), (int) event.y(), doubled ? 2 : 1, b, buttonMask));
+		// Shift+tik / Ctrl+tik sayfaya ulassin: klavye degistiricileri fare maskesiyle ayni alanda tasinir
+		sendMouseEvent(new CefMouseEvent(GLFW.GLFW_PRESS, (int) event.x(), (int) event.y(), doubled ? 2 : 1, b,
+				buttonMask | keyMods(event.modifiers())));
 	}
 
 	@Override
 	public void onMouseReleased(MouseButtonEvent event) {
 		int b = toCefButton(event.button());
 		buttonMask &= ~maskFor(b);
-		sendMouseEvent(new CefMouseEvent(GLFW.GLFW_RELEASE, (int) event.x(), (int) event.y(), 1, b, buttonMask));
+		sendMouseEvent(new CefMouseEvent(GLFW.GLFW_RELEASE, (int) event.x(), (int) event.y(), 1, b,
+				buttonMask | keyMods(event.modifiers())));
 	}
 
 	@Override
@@ -359,10 +372,11 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 
 	@Override
 	public void onKeyPressed(KeyEvent event) {
-		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_PRESS, event.key(), (char) event.key(), event.modifiers());
+		int mods = keyMods(event.modifiers());
+		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_PRESS, event.key(), (char) event.key(), mods);
 		e.scancode = event.scancode(); // input() GLFW tus kodudur; native Windows tusunu scancode'dan turetir
 		sendKeyEvent(e);
-		sendEnterChar(event.key(), event.modifiers());
+		sendEnterChar(event.key(), mods);
 	}
 
 	/**
@@ -377,7 +391,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 
 	@Override
 	public void onKeyReleased(KeyEvent event) {
-		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_RELEASE, event.key(), (char) event.key(), event.modifiers());
+		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_RELEASE, event.key(), (char) event.key(), keyMods(event.modifiers()));
 		e.scancode = event.scancode(); // input() GLFW tus kodudur; native Windows tusunu scancode'dan turetir
 		sendKeyEvent(e);
 	}
@@ -396,7 +410,16 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 
 	@Override
 	public void onCharTyped(CharacterEvent event) {
-		char c = (char) event.codepoint();
+		int cp = event.codepoint();
+		if (Character.isSupplementaryCodePoint(cp)) {
+			// Emoji gibi U+FFFF ustu karakterler: (char) kirpiyordu; Chromium UTF-16 ciftini iki CHAR olayindan birlestirir
+			char hi = Character.highSurrogate(cp);
+			char lo = Character.lowSurrogate(cp);
+			sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, hi, hi, 0));
+			sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, lo, lo, 0));
+			return;
+		}
+		char c = (char) cp;
 		sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, c, c, 0));
 	}
 
