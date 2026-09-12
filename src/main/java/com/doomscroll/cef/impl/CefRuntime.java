@@ -20,6 +20,23 @@ import java.util.concurrent.CompletableFuture;
  * CEF yasam dongusu: ikilileri indir (arka plan) -> render is parcaciginda baslat -> her karede pompala -> kapat.
  */
 public final class CefRuntime implements CefService {
+	/**
+	 * Runs in every http(s) frame as soon as its document is committed, before the page's own scripts. Gives every
+	 * iframe the fullscreen / autoplay / encrypted-media / picture-in-picture permissions (Chromium reads the
+	 * allow attributes when the child document is created, so setting them later has no effect until the iframe
+	 * reloads; embedded players on film sites are usually in the initial HTML). Without this the player's own
+	 * fullscreen button does nothing.
+	 */
+	static final String EARLY_JS = "(function(){if(window.__dsEarly)return;window.__dsEarly=1;"
+			+ "var NEED=['fullscreen','autoplay','encrypted-media','picture-in-picture'];"
+			+ "var fix=function(f){try{if(!f||f.tagName!=='IFRAME')return;if(!f.hasAttribute('allowfullscreen'))f.setAttribute('allowfullscreen','');"
+			+ "var a=f.getAttribute('allow')||'',add='';for(var i=0;i<NEED.length;i++){if(a.indexOf(NEED[i])<0)add+=((a||add)?'; ':'')+NEED[i];}if(add)f.setAttribute('allow',a+add);}catch(e){}};"
+			+ "var scan=function(n){if(!n||n.nodeType!==1)return;fix(n);if(n.querySelectorAll){var l=n.querySelectorAll('iframe');for(var i=0;i<l.length;i++)fix(l[i]);}};"
+			+ "scan(document.documentElement);"
+			+ "try{new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];if(m.type==='attributes'){fix(m.target);continue;}var an=m.addedNodes;for(var j=0;j<an.length;j++)scan(an[j]);}})"
+			+ ".observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['allow','allowfullscreen']});}catch(e){}"
+			+ "})();";
+
 	private static final Object LOCK = new Object();
 	private static Init init;
 	private static CefRuntime instance;
@@ -363,6 +380,10 @@ public final class CefRuntime implements CefService {
 				OsrBrowser b = findBrowser(browser);
 				if (b != null) {
 					b.noteLoadStart(frame == null ? null : frame.getIdentifier());
+				}
+				String url = frame == null ? null : frame.getURL();
+				if (url != null && url.startsWith("http")) {
+					frame.executeJavaScript(EARLY_JS, url, 0);
 				}
 			}
 
