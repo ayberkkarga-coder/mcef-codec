@@ -306,6 +306,31 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		wasResized(Math.max(1, width), Math.max(1, height));
 	}
 
+	/**
+	 * Re-synchronises the view surface: shrinks the view by one pixel and restores it straight away.
+	 *
+	 * <p>In windowless mode CEF 126 leaves a fullscreen change requested from an out-of-process iframe pending until
+	 * the surface changes. The browser grants it and reports it, but neither the player's document nor the page
+	 * enters (or leaves) fullscreen, and the promise never settles, so a film site's own fullscreen button does
+	 * nothing. WasResized() with an unchanged size does not help. Measured with these binaries, the pending change
+	 * completes within one frame of this call, for entering and for leaving. Called after the message-loop pump,
+	 * never from inside a CEF callback.
+	 */
+	void nudgeSurface() {
+		if (closed) {
+			return;
+		}
+		int w = Math.max(1, browser_rect_.width);
+		int h = browser_rect_.height;
+		if (h < 2) {
+			return;
+		}
+		browser_rect_.setBounds(0, 0, w, h - 1);
+		wasResized(w, h - 1);
+		browser_rect_.setBounds(0, 0, w, h);
+		wasResized(w, h);
+	}
+
 	@Override
 	public void setFocus(boolean focused) {
 		super.setFocus(focused);

@@ -45,6 +45,8 @@ public final class CefRuntime implements CefService {
 	private final CefClient client;
 	private final List<OsrBrowser> browsers = new java.util.concurrent.CopyOnWriteArrayList<>();
 	private static final List<OsrBrowser> ALL_BROWSERS = new java.util.concurrent.CopyOnWriteArrayList<>();
+	/** Work that must run on the pumping thread after the current message-loop iteration, outside CEF callbacks. */
+	private static final java.util.Queue<Runnable> AFTER_PUMP = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
 	/** Logs failed resource loads (HTTP >= 400 or a network error); for diagnosing why a site does not play. */
 	private static final org.cef.handler.CefResourceRequestHandlerAdapter RESOURCE_LOGGER = new org.cef.handler.CefResourceRequestHandlerAdapter() {
@@ -193,6 +195,13 @@ public final class CefRuntime implements CefService {
 	public void pump() {
 		long t0 = System.nanoTime();
 		app.N_DoMessageLoopWork();
+		for (Runnable task; (task = AFTER_PUMP.poll()) != null; ) {
+			try {
+				task.run();
+			} catch (RuntimeException e) {
+				CefNatives.LOGGER.warn("after-pump task failed", e);
+			}
+		}
 		pumpNanos += System.nanoTime() - t0;
 		pumps++;
 	}
@@ -345,6 +354,9 @@ public final class CefRuntime implements CefService {
 				if (message != null && message.contains("frame is sandboxed")) {
 					return true; // sandbox warning from ad iframes: noise
 				}
+				if (message != null && message.startsWith("Allow attribute will take precedence over 'allowfullscreen'")) {
+					return true; // EARLY_JS adds allow="fullscreen" next to a site's allowfullscreen: harmless, and on every page
+				}
 				if (level == CefSettings.LogSeverity.LOGSEVERITY_ERROR || level == CefSettings.LogSeverity.LOGSEVERITY_WARNING || level == CefSettings.LogSeverity.LOGSEVERITY_FATAL) {
 					String src = source == null ? "" : source;
 					if (src.length() > 90) src = "..." + src.substring(src.length() - 90);
@@ -355,8 +367,14 @@ public final class CefRuntime implements CefService {
 
 			@Override
 			public void onFullscreenModeChange(org.cef.browser.CefBrowser browser, boolean fullscreen) {
-				// No window in OSR; the page switches to its own fullscreen layout (the video fills the view)
+				// No window in OSR; the page switches to its own fullscreen layout (the element fills the view).
+				// A change requested from an out-of-process iframe (film-site players) stays pending until the
+				// view surface changes, so nudge it once this pump iteration is over (see OsrBrowser.nudgeSurface).
 				CefNatives.LOGGER.info("[fullscreen] page fullscreen: {}", fullscreen);
+				OsrBrowser b = findBrowser(browser);
+				if (b != null) {
+					AFTER_PUMP.add(b::nudgeSurface);
+				}
 			}
 		});
 		// New window/popup: cannot be opened in OSR. A same-site target opens in the same browser, a foreign one (ad) is blocked.
