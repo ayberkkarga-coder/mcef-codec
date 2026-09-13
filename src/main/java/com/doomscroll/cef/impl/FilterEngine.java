@@ -11,39 +11,39 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Kucuk bir Adblock Plus / uBlock kural motoru (saf Java, Minecraft'a bagimli degil).
+ * A small Adblock Plus / uBlock rule engine (pure Java, no Minecraft dependency).
  *
- * Ag kurallari: ||alan^ , |baslangic, sonu|, * ve ^ joker/ayirici, secenekler: third-party/3p, ~third-party/1p,
- * tur (script, image, stylesheet, object, xmlhttprequest, subdocument, document, media, font, other, ping,
- * websocket), domain=a|b|~c, important/match-case (yok sayilir). @@ istisna. Desteklenmeyen secenekli
- * (redirect=, csp=, removeparam, rewrite, badfilter, header=, method=, popup...) ve /regex/ kurallar atlanir.
- * Hiz: her kuralin sinirlari belli en uzun (>=4) alfasayisal parcasi anahtar olur; istek URL'sinin parcalari
- * ile yalnizca ilgili kurallar denenir. Anahtarsiz kurallar "genel" listede her istekte denenir.
+ * Network rules: ||domain^ , |start, end|, * and ^ as wildcard/separator, options: third-party/3p, ~third-party/1p,
+ * type (script, image, stylesheet, object, xmlhttprequest, subdocument, document, media, font, other, ping,
+ * websocket), domain=a|b|~c, important/match-case (ignored). @@ = exception. Rules with unsupported options
+ * (redirect=, csp=, removeparam, rewrite, badfilter, header=, method=, popup...) and /regex/ rules are skipped.
+ * Speed: each rule's longest (>=4) alphanumeric token with well-defined boundaries becomes its key; only the rules
+ * keyed by the request URL's tokens are tried. Keyless rules sit in a "generic" list and are tried on every request.
  *
- * Kozmetik kurallar: alanlar##secici (genel ya da alan adina ozel), alan#@#secici (istisna). Sahte sinif (:)
- * iceren, prosedurel (#?#, #$#, +js) kurallar atlanir. CSS metni alan adina gore uretilir (kucuk onbellek).
+ * Cosmetic rules: domains##selector (generic or domain-specific), domain#@#selector (exception). Rules containing a
+ * pseudo-class (:) and procedural rules (#?#, #$#, +js) are skipped. CSS text is generated per domain (small cache).
  */
 public final class FilterEngine {
-	// tur bitleri
+	// type bits
 	public static final int T_DOCUMENT = 1, T_SUBDOCUMENT = 2, T_SCRIPT = 4, T_IMAGE = 8, T_STYLESHEET = 16, T_OBJECT = 32,
 			T_XHR = 64, T_MEDIA = 128, T_FONT = 256, T_OTHER = 512, T_PING = 1024, T_WEBSOCKET = 2048;
 
 	static final class Rule {
-		String pattern;          // kucuk harf, anchor'lar ve secenekler ayrildi
+		String pattern;          // lowercase, anchors and options stripped
 		boolean domainAnchor, startAnchor, endAnchor, exception;
-		int typeMask;            // 0 = her tur
-		int party;               // 0 her ikisi, 1 yalniz ayni site, 3 yalniz ucuncu taraf
-		String[] domInc, domExc; // domain= (kucuk harf)
-		String firstLit;         // ilk joker oncesi sabit parca (arama hizi icin)
+		int typeMask;            // 0 = any type
+		int party;               // 0 both, 1 same-site only, 3 third-party only
+		String[] domInc, domExc; // domain= (lowercase)
+		String firstLit;         // literal part before the first wildcard (for faster search)
 	}
 
 	private final Map<String, List<Rule>> blockIndex = new HashMap<>();
 	private final List<Rule> blockGeneric = new ArrayList<>();
 	private final Map<String, List<Rule>> allowIndex = new HashMap<>();
 	private final List<Rule> allowGeneric = new ArrayList<>();
-	private final Set<String> hostBlock = new HashSet<>();          // ||alan^ (secenek yok) hizli yol
-	private final Set<String> genericHideOff = new HashSet<>();     // @@||alan^$generichide|elemhide: genel kozmetik kapali
-	private final Set<String> docAllow = new HashSet<>();           // @@||alan^$document: sayfada hic engelleme yok
+	private final Set<String> hostBlock = new HashSet<>();          // ||domain^ (no options) fast path
+	private final Set<String> genericHideOff = new HashSet<>();     // @@||domain^$generichide|elemhide: generic cosmetic rules off
+	private final Set<String> docAllow = new HashSet<>();           // @@||domain^$document: no blocking at all on the page
 	private final List<String> cosmeticGeneric = new ArrayList<>();
 	private final Map<String, List<String>> cosmeticByDomain = new HashMap<>();
 	private final Map<String, Set<String>> cosmeticExcByDomain = new HashMap<>();
@@ -63,9 +63,9 @@ public final class FilterEngine {
 		hostBlock.add(host);
 	}
 
-	// ---------------- ayristirma ----------------
+	// ---------------- parsing ----------------
 
-	/** Bir liste dosyasinin satirlarini ekler. */
+	/** Adds the lines of a filter list file. */
 	public void parse(Iterable<String> lines) {
 		for (String raw : lines) {
 			String line = raw.trim();
@@ -89,7 +89,7 @@ public final class FilterEngine {
 		}
 		for (String d : domains.toLowerCase(Locale.ROOT).split(",")) {
 			d = d.trim();
-			if (d.isEmpty() || d.startsWith("~") || d.indexOf('*') >= 0) continue; // negatif/joker alanlar atlanir
+			if (d.isEmpty() || d.startsWith("~") || d.indexOf('*') >= 0) continue; // negated/wildcard domains are skipped
 			if (exception) cosmeticExcByDomain.computeIfAbsent(d, k -> new HashSet<>()).add(sel);
 			else cosmeticByDomain.computeIfAbsent(d, k -> new ArrayList<>()).add(sel);
 			cosRules++;
@@ -118,18 +118,18 @@ public final class FilterEngine {
 		Rule r = new Rule();
 		String s = line;
 		if (s.startsWith("@@")) { r.exception = true; s = s.substring(2); }
-		// secenekler: son '$' (URL icinde $ nadir; regex kurallarini zaten atliyoruz)
+		// options: after the last '$' ($ is rare inside URLs; we skip regex rules anyway)
 		int dollar = s.lastIndexOf('$');
 		String opts = null;
 		if (dollar > 0) {
 			String before = s.substring(0, dollar);
-			if (before.length() >= 2 && before.startsWith("/") && before.endsWith("/")) { skipped++; return; } // regex + secenek
+			if (before.length() >= 2 && before.startsWith("/") && before.endsWith("/")) { skipped++; return; } // regex + options
 			opts = s.substring(dollar + 1);
 			s = before;
 		}
-		if (s.length() >= 2 && s.startsWith("/") && s.endsWith("/")) { skipped++; return; } // regex kurali
+		if (s.length() >= 2 && s.startsWith("/") && s.endsWith("/")) { skipped++; return; } // regex rule
 		if (opts != null && r.exception) {
-			// @@||alan^$generichide / $elemhide / $document : alan bazli istisnalar
+			// @@||domain^$generichide / $elemhide / $document : per-domain exceptions
 			boolean gh = false, doc = false, other = false;
 			for (String o : opts.split(",")) {
 				String opt = o.trim().toLowerCase(Locale.ROOT);
@@ -172,7 +172,7 @@ public final class FilterEngine {
 				int bit = typeBit(neg ? opt.substring(1) : opt);
 				if (bit > 0) { if (neg) negTypes |= bit; else r.typeMask |= bit; continue; }
 				skipped++;
-				return; // desteklenmeyen secenek: kurali atla (yanlis pozitif olmasin)
+				return; // unsupported option: skip the rule (to avoid false positives)
 			}
 			if (negTypes != 0 && r.typeMask == 0) r.typeMask = ~negTypes & 0xFFFF;
 		}
@@ -182,7 +182,7 @@ public final class FilterEngine {
 		s = s.toLowerCase(Locale.ROOT);
 		if (s.isEmpty() || s.equals("*")) { skipped++; return; }
 		r.pattern = s;
-		// hizli yol: ||alan^ secenek yok
+		// fast path: ||domain^ without options
 		if (r.domainAnchor && !r.exception && opts == null && s.endsWith("^") && s.indexOf('/') < 0 && s.indexOf('*') < 0 && s.indexOf('^') == s.length() - 1) {
 			hostBlock.add(s.substring(0, s.length() - 1));
 			netRules++;
@@ -206,7 +206,7 @@ public final class FilterEngine {
 		return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
 	}
 
-	/** Kuralin anahtar parcasi: iki yani joker olmayan, sinirlari belli, >=4 karakterlik en uzun alfasayisal dizi. */
+	/** The rule's key token: the longest alphanumeric run of >=4 characters with well-defined boundaries and no wildcard on either side. */
 	private static String tokenOf(Rule r) {
 		String p = r.pattern;
 		String best = null;
@@ -215,9 +215,9 @@ public final class FilterEngine {
 			if (!alnum(p.charAt(i))) { i++; continue; }
 			int j = i;
 			while (j < n && alnum(p.charAt(j))) j++;
-			// sol sinir: baslangic (domainAnchor/startAnchor ile) ya da joker olmayan ayirici
+			// left boundary: the start (with domainAnchor/startAnchor) or a separator that is not a wildcard
 			boolean leftOk = (i == 0) ? (r.domainAnchor || r.startAnchor) : p.charAt(i - 1) != '*';
-			// sag sinir: '^'/'/'/'.' gibi ayirici ya da (endAnchor ile) son; sondaysa ve anchor yoksa guvensiz
+			// right boundary: a separator such as '^'/'/'/'.' or (with endAnchor) the end; at the end without an anchor it is unsafe
 			boolean rightOk = (j == n) ? r.endAnchor : p.charAt(j) != '*';
 			if (leftOk && rightOk && j - i >= 4 && (best == null || j - i > best.length())) best = p.substring(i, j);
 			i = j;
@@ -225,7 +225,7 @@ public final class FilterEngine {
 		return best;
 	}
 
-	// ---------------- ag eslestirme ----------------
+	// ---------------- network matching ----------------
 
 	private static boolean isSep(char c) {
 		return !(alnum(c) || c == '_' || c == '-' || c == '.' || c == '%');
@@ -241,7 +241,7 @@ public final class FilterEngine {
 				for (int k = ui; k <= un; k++) if (glob(u, k, p, pi, endAnchor)) return true;
 				return false;
 			}
-			if (ui >= un) return c == '^' && pi == pn - 1; // ^ sonda: URL sonu da ayiricidir
+			if (ui >= un) return c == '^' && pi == pn - 1; // ^ at the end: the end of the URL also counts as a separator
 			char uc = u.charAt(ui);
 			if (c == '^') { if (!isSep(uc)) return false; }
 			else if (c != uc) return false;
@@ -331,12 +331,12 @@ public final class FilterEngine {
 		}
 	}
 
-	/** @@||alan^$document: bu sayfada hicbir istek engellenmez. */
+	/** @@||domain^$document: no request is blocked on this page. */
 	public boolean pageAllowed(String pageHost) {
 		return inDomainSet(docAllow, pageHost);
 	}
 
-	/** Alan adi hizli yolu: alan ya da ust alanlari listede mi? */
+	/** Domain fast path: is the domain or one of its parent domains in the list? */
 	public boolean hostBlocked(String host) {
 		String h = host;
 		while (true) {
@@ -349,8 +349,8 @@ public final class FilterEngine {
 	}
 
 	/**
-	 * Istek engellensin mi? url kucuk harfe cevrilir. pageHost: istegi yapan sayfanin alan adi (bos olabilir).
-	 * Once istisnalar (@@) bakilir: eslesirse asla engellenmez.
+	 * Should the request be blocked? url is lowercased. pageHost: domain of the page making the request (may be empty).
+	 * Exceptions (@@) are checked first: if one matches, the request is never blocked.
 	 */
 	public boolean shouldBlock(String url, int typeBit, String requestHost, String pageHost) {
 		if (pageAllowed(pageHost)) return false;
@@ -373,9 +373,9 @@ public final class FilterEngine {
 		return siteOf(a).equals(siteOf(b));
 	}
 
-	// ---------------- kozmetik ----------------
+	// ---------------- cosmetic ----------------
 
-	/** Sayfa alan adi icin gizleme CSS'i ("" = kural yok). Onbellekli. */
+	/** Element-hiding CSS for a page's domain ("" = no rules). Cached. */
 	public String cosmeticCss(String host) {
 		if (host == null || host.isEmpty()) return "";
 		String h = host.toLowerCase(Locale.ROOT);
@@ -403,7 +403,7 @@ public final class FilterEngine {
 		return css;
 	}
 
-	/** Gecersiz tek bir secici tum grubu bozar: kucuk gruplar halinde yaz. */
+	/** A single invalid selector breaks the whole group: write the selectors in small groups. */
 	private static void appendChunks(StringBuilder sb, List<String> sels, Set<String> exc) {
 		int n = 0;
 		StringBuilder grp = new StringBuilder();
@@ -421,6 +421,6 @@ public final class FilterEngine {
 	}
 
 	public String stats() {
-		return netRules + " ag kurali, " + hostBlock.size() + " alan, " + cosRules + " kozmetik, " + genericHideOff.size() + " generichide, " + docAllow.size() + " sayfa istisnasi, " + skipped + " atlanan";
+		return netRules + " network rules, " + hostBlock.size() + " domains, " + cosRules + " cosmetic, " + genericHideOff.size() + " generichide, " + docAllow.size() + " page exceptions, " + skipped + " skipped";
 	}
 }

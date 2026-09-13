@@ -1,22 +1,22 @@
 package com.doomscroll.cef.api;
 
-/** CEF baslatilmadan ONCE ayarlanmasi gereken secenekler. */
+/** Options that must be set BEFORE CEF is started. */
 public final class CefLaunchOptions {
-	/** Bos ise Chromium varsayilani. Google girisi gibi "gomulu tarayici" engelleri icin guncel bir Chrome kimligi verilir. */
+	/** Empty = Chromium default. A current Chrome identity is set here to get past "embedded browser" blocks such as Google sign-in. */
 	public static volatile String userAgent = "";
 
-	/** Calisma zamaninda degistirilebilir: null degilse her istegin User-Agent basligi bu olur, Client-Hints silinir. */
+	/** Can be changed at runtime: if not null, every request's User-Agent header becomes this value and the Client-Hints headers are removed. */
 	public static volatile String headerUserAgentOverride = null;
 
-	/** Tarayici boyama kare hizi (1..60, CEF ust siniri 60). Tarayici acilirken okunur; sonra CefBrowserView.setFrameRate. */
+	/** Browser paint frame rate (1..60, CEF's upper limit is 60). Read when a browser is opened; after that, use CefBrowserView.setFrameRate. */
 	public static volatile int frameRate = 60;
 
-	/** Alan adi tabanli reklam/izleyici engelleyici (AdBlock). Calisma zamaninda degistirilebilir. */
+	/** Domain-based ad/tracker blocker (AdBlock). Can be changed at runtime. */
 	public static volatile boolean adBlock = true;
 
 	/**
-	 * doomscroll:// yerel sayfalar: adres -> HTML (null = 404). CEF IO is parcaciginda cagrilir; mod ana menuleri
-	 * (doomscroll://home/...) buradan uretir. CEF baslamadan once ayarlanmali.
+	 * doomscroll:// local pages: URL -> HTML (null = 404). Called on the CEF IO thread; the mod generates its main menus
+	 * (doomscroll://home/...) from here. Must be set before CEF starts.
 	 */
 	public static volatile java.util.function.Function<String, String> localPages = null;
 

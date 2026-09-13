@@ -22,14 +22,14 @@ import java.util.Locale;
 import java.util.function.DoubleConsumer;
 
 /**
- * CinemaMod'un codec'li java-cef ikililerini indirir, dogrular ve acar.
- * Yerlesim: config/mcef-codec/libraries/<platform>/ (jcef.path buraya isaret eder).
+ * Downloads, verifies and extracts CinemaMod's codec-enabled java-cef binaries.
+ * Layout: config/mcef-codec/libraries/<platform>/ (jcef.path points here).
  */
 public final class CefNatives {
 	static final Logger LOGGER = LoggerFactory.getLogger("mcef-codec");
 
-	/** CinemaMod java-cef dal 6478 (Chromium 126, Ekim 2024). Eski: eaeb3d4 (CEF 116). */
-	public static final String JAVA_CEF_COMMIT = "81dba0ec8425dd746698cee72c686cc1dcabd85a"; // CinemaMod dal 6478: CEF 126.2.19 / Chromium 126, codec'li
+	/** CinemaMod java-cef branch 6478 (Chromium 126, October 2024). Previous: eaeb3d4 (CEF 116). */
+	public static final String JAVA_CEF_COMMIT = "81dba0ec8425dd746698cee72c686cc1dcabd85a"; // CinemaMod branch 6478: CEF 126.2.19 / Chromium 126, with codecs
 	public static final String MIRROR = "https://mcef-download.cinemamod.com";
 
 	public static final Path DIR = FabricLoader.getInstance().getConfigDir().resolve("mcef-codec");
@@ -57,8 +57,8 @@ public final class CefNatives {
 	}
 
 	/**
-	 * Ikilileri hazir hale getirir. Arka plan is parcaciginda cagrilir.
-	 * Uzak sha256 yerel sha256 ile ayniysa ve klasor doluysa hicbir sey indirmez.
+	 * Gets the binaries ready. Called on a background thread.
+	 * Downloads nothing if the remote sha256 matches the local sha256 and the folder is not empty.
 	 */
 	public static void ensure(DoubleConsumer progress, java.util.function.Consumer<String> stage) throws IOException, InterruptedException {
 		Files.createDirectories(LIBRARIES);
@@ -71,28 +71,28 @@ public final class CefNatives {
 		boolean installed = Files.isDirectory(platformDir()) && Files.list(platformDir()).findAny().isPresent();
 
 		if (installed && remoteSha.equals(localSha)) {
-			LOGGER.info("java-cef ikilileri guncel ({})", platformDir());
+			LOGGER.info("java-cef binaries are up to date ({})", platformDir());
 			return;
 		}
 
 		Path tar = LIBRARIES.resolve(platform() + ".tar.gz");
 		download(url(".tar.gz"), tar, progress);
 
-		// Butunluk: mirror'daki sha256 dosyasindan 64 hex'lik ozeti cek ve indirilen arsivle karsilastir
+		// Integrity: pull the 64-hex-digit digest out of the mirror's sha256 file and compare it with the downloaded archive
 		java.util.regex.Matcher m = java.util.regex.Pattern.compile("[0-9a-fA-F]{64}").matcher(remoteSha);
 		if (!m.find()) {
 			Files.deleteIfExists(tar);
-			throw new IOException("mirror sha256 dosyasinda ozet bulunamadi: " + url(".tar.gz.sha256"));
+			throw new IOException("no digest found in the mirror sha256 file: " + url(".tar.gz.sha256"));
 		}
 		String expected = m.group().toLowerCase();
 		String actual = sha256Hex(tar);
 		if (!expected.equals(actual)) {
 			Files.deleteIfExists(tar);
-			throw new IOException("java-cef arsivi bozuk ya da degistirilmis: beklenen " + expected + ", gelen " + actual);
+			throw new IOException("java-cef archive is corrupt or has been tampered with: expected " + expected + ", got " + actual);
 		}
-		LOGGER.info("java-cef arsivi dogrulandi (sha256 {})", expected.substring(0, 12));
+		LOGGER.info("java-cef archive verified (sha256 {})", expected.substring(0, 12));
 
-		// Surum degisiyor: eski ikililerin kalintilari cakismasin diye platform klasorunu temizle
+		// Version change: clear the platform folder so leftovers from the old binaries cannot conflict
 		if (Files.isDirectory(platformDir())) {
 			try (java.util.stream.Stream<Path> walk = Files.walk(platformDir())) {
 				walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
@@ -105,7 +105,7 @@ public final class CefNatives {
 		extract(tar, LIBRARIES, progress);
 		Files.deleteIfExists(tar);
 		Files.writeString(shaFile, remoteSha, StandardCharsets.UTF_8);
-		LOGGER.info("java-cef ikilileri kuruldu: {}", platformDir());
+		LOGGER.info("java-cef binaries installed: {}", platformDir());
 	}
 
 	private static String sha256Hex(Path file) throws IOException {
@@ -158,7 +158,7 @@ public final class CefNatives {
 			}
 		}
 		Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
-		LOGGER.info("indirildi: {} ({} MB)", target.getFileName(), done / 1_048_576);
+		LOGGER.info("downloaded: {} ({} MB)", target.getFileName(), done / 1_048_576);
 	}
 
 	private static void extract(Path tarGz, Path outDir, DoubleConsumer progress) throws IOException {
@@ -172,7 +172,7 @@ public final class CefNatives {
 				}
 				Path out = outDir.resolve(e.getName()).normalize();
 				if (!out.startsWith(outDir)) {
-					throw new IOException("supheli tar girdisi: " + e.getName());
+					throw new IOException("suspicious tar entry: " + e.getName());
 				}
 				Files.createDirectories(out.getParent());
 				try (OutputStream os = Files.newOutputStream(out)) {

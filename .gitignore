@@ -2,7 +2,7 @@
 .gradle/
 build/
 
-# Gelistirme ciktilari
+# Development outputs
 run/
 build-log*.txt
 
@@ -14,7 +14,7 @@ build-log*.txt
 .classpath
 .project
 
-# Isletim sistemi
+# Operating system
 .DS_Store
 Thumbs.db
 desktop.ini

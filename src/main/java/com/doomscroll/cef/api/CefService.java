@@ -5,8 +5,8 @@ import com.doomscroll.cef.impl.CefRuntime;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Giris noktasi. {@link #initialize()} asenkron calisir: once Chromium ikilileri indirilir/dogrulanir,
- * sonra render is parcaciginda CEF baslatilir. Hazir olunca {@link Initialization#isDone()} true doner.
+ * Entry point. {@link #initialize()} runs asynchronously: first the Chromium binaries are downloaded/verified,
+ * then CEF is started on the render thread. Once it is ready, {@link Initialization#isDone()} returns true.
  */
 public interface CefService {
 
@@ -18,33 +18,33 @@ public interface CefService {
 		return initialize().getFuture();
 	}
 
-	/** Yeni tarayici. Sadece render is parcaciginda ve hazir olduktan sonra cagrilmali. */
+	/** New browser. Must only be called on the render thread, and only once the service is ready. */
 	default CefBrowserView createBrowser(String url, boolean transparent) {
 		return createBrowser(url, transparent, false);
 	}
 
 	/**
-	 * Yeni tarayici.
+	 * New browser.
 	 *
-	 * @param ephemeral true ise cerezler ve oturum diske yazilmayan, kalici profilden ayri
-	 *                  ortak bir baglamda tutulur. Baskasinin actigi bir sayfanin senin giris
-	 *                  yaptigin oturumla ayni baglamda calismamasi icin.
+	 * @param ephemeral if true, cookies and the session are kept in a shared context that is not written to disk
+	 *                  and is separate from the persistent profile. This keeps a page someone else opened from running in
+	 *                  the same context as the session you are signed in to.
 	 */
 	CefBrowserView createBrowser(String url, boolean transparent, boolean ephemeral);
 
-	/** Sayfa disi is: mesaj dongusunu pompalar (mixin cagirir). */
+	/** Work outside the pages: pumps the message loop (called by the mixin). */
 	void pump();
 
-	/** Son cagridan bu yana mesaj dongusu maliyeti: ort. ms/kare ve tarayici sayisi. Sayaclari sifirlar. */
+	/** Message loop cost since the last call: avg. ms/frame and browser count. Resets the counters. */
 	String perfInfo();
 
-	/** Reklam engelleyici durumu: acik/kapali, liste boyutu, engellenen istek sayisi. */
+	/** Ad blocker status: on/off, list size, number of blocked requests. */
 	String adBlockInfo();
 
 	interface Initialization {
 		Stage getStage();
 
-		/** 0..100 ya da bilinmiyorsa -1 */
+		/** 0..100, or -1 if unknown */
 		float getPercentage();
 
 		CompletableFuture<CefService> getFuture();

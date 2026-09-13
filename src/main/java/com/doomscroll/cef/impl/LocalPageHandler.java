@@ -11,8 +11,8 @@ import org.cef.network.CefResponse;
 import java.nio.charset.StandardCharsets;
 
 /**
- * doomscroll:// yerel sayfalari (ana menu vb.): HTML'i mod uretir ({@link CefLaunchOptions#localPages}).
- * Uretici null donerse 404 sayfasi. Her istek icin yeni ornek; CEF IO is parcaciginda calisir.
+ * doomscroll:// local pages (main menu etc.): the mod generates the HTML ({@link CefLaunchOptions#localPages}).
+ * If the generator returns null, a 404 page is served. New instance per request; runs on the CEF IO thread.
  */
 final class LocalPageHandler extends CefResourceHandlerAdapter {
 	private byte[] data = new byte[0];
@@ -27,13 +27,13 @@ final class LocalPageHandler extends CefResourceHandlerAdapter {
 			var f = CefLaunchOptions.localPages;
 			html = f == null ? null : f.apply(url);
 		} catch (Throwable t) {
-			CefNatives.LOGGER.warn("yerel sayfa uretilemedi: {}", url, t);
+			CefNatives.LOGGER.warn("could not generate local page: {}", url, t);
 		}
 		found = html != null;
 		if (html == null) {
 			html = "<!doctype html><meta charset=\"utf-8\"><title>doomscroll</title>"
 					+ "<body style=\"background:#141418;color:#ddd;font-family:sans-serif;padding:40px\">"
-					+ "<h2>Sayfa yok</h2><p>" + escape(url) + "</p></body>";
+					+ "<h2>Page not found</h2><p>" + escape(url) + "</p></body>";
 		}
 		data = html.getBytes(StandardCharsets.UTF_8);
 		offset = 0;

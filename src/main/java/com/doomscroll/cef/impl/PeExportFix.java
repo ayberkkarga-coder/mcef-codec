@@ -11,10 +11,10 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * CinemaMod java-cef dal 6478 (Chromium 126) derlemesinde N_CreateBrowser JNI fonksiyonu extern "C" olmadan
- * derlenmis; disa aktarma tablosunda C++ karisik adla duruyor ve JVM bulamiyor. Bu sinif DLL'nin
- * export ad tablosunda karisik adi duz JNI adiyla degistirir ve tabloyu yeniden siralar
- * (GetProcAddress ikili arama yapar; tablo sirali olmak zorunda). Islem bir kez yapilir, idempotenttir.
+ * In the CinemaMod java-cef branch 6478 (Chromium 126) build, the N_CreateBrowser JNI function was compiled without
+ * extern "C"; it sits in the export table under its C++ mangled name, so the JVM cannot find it. This class replaces
+ * the mangled name with the plain JNI name in the DLL's export name table and re-sorts the table
+ * (GetProcAddress does a binary search; the table must be sorted). The patch is applied once and is idempotent.
  */
 final class PeExportFix {
 	private static final String MANGLED =
@@ -23,7 +23,7 @@ final class PeExportFix {
 
 	private PeExportFix() {}
 
-	/** jcef.dll yuklenmeden ONCE cagrilir. Duz sembol zaten varsa hicbir sey yapmaz. */
+	/** Called BEFORE jcef.dll is loaded. Does nothing if the plain symbol already exists. */
 	static void apply(Path dll) {
 		try {
 			if (!Files.isRegularFile(dll)) {
@@ -71,14 +71,14 @@ final class PeExportFix {
 				entries.add(new Object[]{name, rva, (int) (b.getShort(ordsOff + 2 * i) & 0xFFFF), off});
 			}
 			if (plainExists) {
-				CefNatives.LOGGER.info("jcef.dll export tablosu zaten duzgun");
+				CefNatives.LOGGER.info("jcef.dll export table is already correct");
 				return;
 			}
 			if (mangledIdx < 0) {
-				CefNatives.LOGGER.warn("jcef.dll: ne duz ne karisik N_CreateBrowser sembolu var; yama atlandi");
+				CefNatives.LOGGER.warn("jcef.dll: neither a plain nor a mangled N_CreateBrowser symbol found; patch skipped");
 				return;
 			}
-			// 1) adi yerinde degistir (duz ad daha kisa, kalan kisim sifirlanir)
+			// 1) replace the name in place (the plain name is shorter; the remaining bytes are zeroed)
 			Object[] e = entries.get(mangledIdx);
 			int off = (int) e[3];
 			byte[] plain = PLAIN.getBytes(StandardCharsets.US_ASCII);
@@ -86,7 +86,7 @@ final class PeExportFix {
 			System.arraycopy(plain, 0, data, off, plain.length);
 			Arrays.fill(data, off + plain.length, off + oldLen + 1, (byte) 0);
 			e[0] = plain;
-			// 2) ad tablosunu (ve ordinal tablosunu) bayt sirasina gore yeniden sirala
+			// 2) re-sort the name table (and the ordinal table) in byte order
 			entries.sort((x, y) -> Arrays.compareUnsigned((byte[]) x[0], (byte[]) y[0]));
 			for (int i = 0; i < numNames; i++) {
 				b.putInt(namesOff + 4 * i, (int) entries.get(i)[1]);
@@ -95,9 +95,9 @@ final class PeExportFix {
 			Path tmp = dll.resolveSibling(dll.getFileName() + ".patch.tmp");
 			Files.write(tmp, data);
 			Files.move(tmp, dll, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-			CefNatives.LOGGER.info("jcef.dll export tablosu yamalandi: N_CreateBrowser duz JNI adina cevrildi");
+			CefNatives.LOGGER.info("jcef.dll export table patched: N_CreateBrowser renamed to its plain JNI name");
 		} catch (IOException | RuntimeException ex) {
-			CefNatives.LOGGER.error("jcef.dll export yamasi basarisiz", ex);
+			CefNatives.LOGGER.error("jcef.dll export patch failed", ex);
 		}
 	}
 
@@ -107,6 +107,6 @@ final class PeExportFix {
 				return rva - s[0] + s[2];
 			}
 		}
-		throw new IllegalStateException("RVA bolum disinda: " + Integer.toHexString(rva));
+		throw new IllegalStateException("RVA not in any section: " + Integer.toHexString(rva));
 	}
 }

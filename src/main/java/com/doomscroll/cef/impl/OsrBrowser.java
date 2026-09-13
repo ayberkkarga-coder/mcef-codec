@@ -27,8 +27,8 @@ import java.awt.Rectangle;
 import java.nio.ByteBuffer;
 
 /**
- * Ekran-disi tarayici: CEF'in verdigi BGRA kareleri GPU dokusuna yukler,
- * Minecraft girdilerini fork'un CefKeyEvent/CefMouseEvent tiplerine cevirir.
+ * Off-screen browser: uploads the BGRA frames CEF delivers into a GPU texture and
+ * converts Minecraft input into the fork's CefKeyEvent/CefMouseEvent types.
  */
 final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	private final CefRuntime runtime;
@@ -38,7 +38,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	private GpuTextureView textureView;
 	private int buttonMask = 0;
 	private volatile boolean closed = false;
-	/** Sayfadan gelen __DS__ mesajlari (CEF is parcacigi). */
+	/** __DS__ messages coming from the page (CEF thread). */
 	@Nullable
 	private volatile java.util.function.Consumer<String> messageListener;
 
@@ -60,7 +60,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			try {
 				l.accept(text);
 			} catch (Exception e) {
-				CefNatives.LOGGER.warn("yayin parcasi islenemedi", e);
+				CefNatives.LOGGER.warn("could not process stream chunk", e);
 			}
 		}
 	}
@@ -71,28 +71,28 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			try {
 				l.accept(text);
 			} catch (Exception e) {
-				CefNatives.LOGGER.warn("sayfa mesaji islenemedi", e);
+				CefNatives.LOGGER.warn("could not process page message", e);
 			}
 		}
 	}
 
-	// ---- ses: CEF planar float -> mono 16-bit halka tampon (ses motoruna beslenir) ----
-	// Okuyucu (readAudio) hiz uyarlamali: tampon dolarsa hafifce hizli, bosalirsa hafifce yavas okur
-	// (dogrusal ara-degerleme); eskiden 120 ms ustu aniden atiliyordu -> dalga formunda kesik = "pit" sesi.
-	// Bosalinca sifira yumusak inis, gelince yumusak giris. Gelen hiz surekli olculur; nominal hizdan
-	// %1,5'ten fazla sapiyorsa (iki pencere ust uste) nominal hiz duzeltilir; dinleyen taraf akisi yeniden acar.
+	// ---- audio: CEF planar float -> mono 16-bit ring buffer (fed to the sound engine) ----
+	// The reader (readAudio) is rate-adaptive: it reads slightly faster when the buffer fills up, slightly slower when it drains
+	// (linear interpolation); previously anything above 120 ms was dropped abruptly -> a cut in the waveform = "pop" sound.
+	// Soft fade to zero when drained, soft fade-in when data returns. The incoming rate is measured continuously; if it
+	// deviates from the nominal rate by more than 1.5% (two windows in a row) the nominal rate is corrected; the listener reopens the stream.
 	private short[] ring = new short[96000];
 	private int ringRead = 0, ringWrite = 0, ringCount = 0;
 	private volatile int audioRate = 0;
 	private int audioChannels = 0;
-	// okuyucu durumu (senkronize erisim)
+	// reader state (synchronized access)
 	private double fracPos = 0.0;
 	private float lastOut = 0f;
 	private float fadeGain = 1f;
 	private boolean starving = true;
 	private long dropEvents = 0L;
 	private long underrunEvents = 0L;
-	// gelen hiz olcumu (yalnizca CEF ses is parcacigi)
+	// incoming rate measurement (CEF audio thread only)
 	private long measureStart = 0L;
 	private long measuredFrames = 0L;
 	private int driftWindows = 0;
@@ -104,7 +104,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			driftWindows = 0;
 			audioRate = sampleRate;
 			audioChannels = channels <= 0 ? 2 : channels;
-			ring = new short[Math.max(8000, sampleRate) * 2]; // 2 sn tampon
+			ring = new short[Math.max(8000, sampleRate) * 2]; // 2 s buffer
 			ringRead = ringWrite = ringCount = 0;
 			fracPos = 0.0;
 			lastOut = 0f;
@@ -121,7 +121,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			fracPos = 0.0;
 			starving = true;
 		}
-		CefNatives.LOGGER.info("ses akisi hizi: {} Hz ({}, {} kanal)", rate, how, audioChannels);
+		CefNatives.LOGGER.info("audio stream rate: {} Hz ({}, {} channels)", rate, how, audioChannels);
 	}
 
 	void audioStopped() {
@@ -131,7 +131,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		}
 	}
 
-	/** Olculen hizi %2,5 icindeyse standart bir hiza yuvarlar, degilse oldugu gibi kullanir. */
+	/** Snaps the measured rate to a standard one if within 2.5%, otherwise uses it as is. */
 	private static int snapRate(double hz) {
 		int best = -1;
 		for (int cand : new int[]{22050, 32000, 44100, 48000, 88200, 96000}) {
@@ -142,7 +142,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		return best > 0 ? best : (int) Math.round(hz);
 	}
 
-	/** CEF 126 JNI: data = sol kanalin float ornekleri (frames adet); mono olarak kullanilir. */
+	/** CEF 126 JNI: data = the left channel's float samples (frames of them); used as mono. */
 	void audioPacket(float[] data, int frames) {
 		if (audioChannels <= 0 || frames <= 0 || data == null) {
 			return;
@@ -158,10 +158,10 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		int forced = com.doomscroll.cef.api.CefAudioDefaults.sampleRate;
 		if (audioRate <= 0) {
 			if (forced > 0) {
-				setRate(forced, "sabit");
+				setRate(forced, "forced");
 			} else if (elapsed >= 1_500_000_000L) {
 				double hz = measuredFrames * 1e9 / elapsed;
-				setRate(snapRate(hz), String.format("olculen %.0f Hz", hz));
+				setRate(snapRate(hz), String.format("measured %.0f Hz", hz));
 				measureStart = now;
 				measuredFrames = 0L;
 			}
@@ -175,7 +175,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			if (forced <= 0 && Math.abs(hz - audioRate) / audioRate > 0.015) {
 				if (++driftWindows >= 2) {
 					driftWindows = 0;
-					setRate(snapRate(hz), String.format("duzeltildi; olculen %.0f Hz", hz));
+					setRate(snapRate(hz), String.format("corrected; measured %.0f Hz", hz));
 				}
 			} else {
 				driftWindows = 0;
@@ -213,11 +213,11 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		}
 	}
 
-	/** Ses tamponu istatistigi (perfInfo icin). */
+	/** Audio buffer statistics (for perfInfo). */
 	private String audioInfo() {
 		synchronized (this) {
-			if (audioRate <= 0) return "ses yok";
-			String out = String.format(java.util.Locale.ROOT, "ses %d Hz, tampon %d ms, %d atma, %d bosalma",
+			if (audioRate <= 0) return "no audio";
+			String out = String.format(java.util.Locale.ROOT, "audio %d Hz, buffer %d ms, %d drops, %d underruns",
 					audioRate, (int) (ringCount * 1000L / audioRate), dropEvents, underrunEvents);
 			dropEvents = 0L;
 			underrunEvents = 0L;
@@ -240,7 +240,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			int lo = target / 2;
 			int hard = Math.max(300, target * 4);
 			if (backlogMs > hard) {
-				// Patolojik birikme (donma, sekme): tek seferde hedefe in, yumusak girisle devam
+				// Pathological backlog (freeze, stutter): drop to the target in one go, continue with a soft fade-in
 				int keep = rate * target / 1000;
 				int drop = ringCount - keep;
 				ringRead = (ringRead + drop) % ring.length;
@@ -249,14 +249,14 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 				fadeGain = 0f;
 				backlogMs = target;
 			}
-			// Hiz uyarlamasi: hedef [lo, hi]; disina cikinca en fazla %2 (yarim yarim-ton) hizlan/yavasla
+			// Rate adaptation: target [lo, hi]; outside it, speed up/slow down by at most 2% (half a semitone)
 			double ratio;
 			if (backlogMs > hi + 70) ratio = 1.02;
 			else if (backlogMs > hi) ratio = 1.006;
 			else if (backlogMs < lo / 2) ratio = 0.985;
 			else if (backlogMs < lo) ratio = 0.995;
 			else ratio = 1.0;
-			int prime = rate * Math.max(20, target * 2 / 3) / 1000; // bosaldiktan sonra bu kadar birikmeden baslama
+			int prime = rate * Math.max(20, target * 2 / 3) / 1000; // after running dry, do not restart until this much has accumulated
 			for (int i = 0; i < samples; i++) {
 				float out;
 				boolean have = ringCount >= 2 && (!starving || ringCount >= prime);
@@ -283,7 +283,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 						starving = true;
 						underrunEvents++;
 					}
-					out = lastOut * 0.9f; // tik olmasin: sifira yumusak inis
+					out = lastOut * 0.9f; // no click: soft fade to zero
 				}
 				lastOut = out;
 				int v = Math.round(out);
@@ -298,7 +298,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		this.runtime = runtime;
 	}
 
-	// ---- boyut / odak ----
+	// ---- size / focus ----
 
 	@Override
 	public void resize(int width, int height) {
@@ -311,10 +311,10 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		super.setFocus(focused);
 	}
 
-	// ---- fare ----
+	// ---- mouse ----
 
 	private static int toCefButton(int glfwButton) {
-		// MCEF 2.x: Minecraft'ta orta ve sag tus yer degistirir
+		// MCEF 2.x: middle and right button are swapped in Minecraft
 		return switch (glfwButton) {
 			case GLFW.GLFW_MOUSE_BUTTON_RIGHT -> 2;
 			case GLFW.GLFW_MOUSE_BUTTON_MIDDLE -> 1;
@@ -331,10 +331,10 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	}
 
 	/**
-	 * Native taraf (CinemaMod java-cef, GetCefModifiersGlfw) ayni alanda hem GLFW klavye
-	 * degistiricilerini (Shift 1, Ctrl 2, Alt 4, Super 8) hem de 0x10/0x20/0x40'i fare tusu
-	 * maskesi olarak okur. GLFW'de 0x10 Caps Lock, 0x20 Num Lock: filtrelenmezse Caps Lock
-	 * acikken her tus olayi "sol fare basili" diye gidiyordu.
+	 * The native side (CinemaMod java-cef, GetCefModifiersGlfw) reads the same field both as the GLFW keyboard
+	 * modifiers (Shift 1, Ctrl 2, Alt 4, Super 8) and as the mouse button mask 0x10/0x20/0x40.
+	 * In GLFW 0x10 is Caps Lock and 0x20 is Num Lock: unless filtered out, every key event went out as
+	 * "left mouse button held" while Caps Lock was on.
 	 */
 	private static int keyMods(int glfwModifiers) {
 		return glfwModifiers & (GLFW.GLFW_MOD_SHIFT | GLFW.GLFW_MOD_CONTROL | GLFW.GLFW_MOD_ALT | GLFW.GLFW_MOD_SUPER);
@@ -344,7 +344,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	public void onMouseClicked(MouseButtonEvent event, boolean doubled) {
 		int b = toCefButton(event.button());
 		buttonMask |= maskFor(b);
-		// Shift+tik / Ctrl+tik sayfaya ulassin: klavye degistiricileri fare maskesiyle ayni alanda tasinir
+		// Let Shift+click / Ctrl+click reach the page: keyboard modifiers travel in the same field as the mouse mask
 		sendMouseEvent(new CefMouseEvent(GLFW.GLFW_PRESS, (int) event.x(), (int) event.y(), doubled ? 2 : 1, b,
 				buttonMask | keyMods(event.modifiers())));
 	}
@@ -368,20 +368,20 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		sendMouseWheelEvent(new CefMouseWheelEvent(CefMouseWheelEvent.WHEEL_UNIT_SCROLL, x, y, a * 3, 0));
 	}
 
-	// ---- klavye ----
+	// ---- keyboard ----
 
 	@Override
 	public void onKeyPressed(KeyEvent event) {
 		int mods = keyMods(event.modifiers());
 		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_PRESS, event.key(), (char) event.key(), mods);
-		e.scancode = event.scancode(); // input() GLFW tus kodudur; native Windows tusunu scancode'dan turetir
+		e.scancode = event.scancode(); // input() is the GLFW key code; the native side derives the Windows key from the scancode
 		sendKeyEvent(e);
 		sendEnterChar(event.key(), mods);
 	}
 
 	/**
-	 * Enter icin karakter olayi. GLFW Enter'da char callback uretmez, Chromium ise formu
-	 * "keypress \r" ile gonderir; bu olmadan arama kutularinda Enter hicbir sey yapmiyordu.
+	 * Character event for Enter. GLFW produces no char callback for Enter, whereas Chromium submits the form on
+	 * "keypress \r" only; without this, Enter did nothing in search boxes.
 	 */
 	private void sendEnterChar(int glfwKey, int modifiers) {
 		if (glfwKey == GLFW.GLFW_KEY_ENTER || glfwKey == GLFW.GLFW_KEY_KP_ENTER) {
@@ -392,7 +392,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	@Override
 	public void onKeyReleased(KeyEvent event) {
 		CefKeyEvent e = new CefKeyEvent(CefKeyEvent.KEY_RELEASE, event.key(), (char) event.key(), keyMods(event.modifiers()));
-		e.scancode = event.scancode(); // input() GLFW tus kodudur; native Windows tusunu scancode'dan turetir
+		e.scancode = event.scancode(); // input() is the GLFW key code; the native side derives the Windows key from the scancode
 		sendKeyEvent(e);
 	}
 
@@ -412,7 +412,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	public void onCharTyped(CharacterEvent event) {
 		int cp = event.codepoint();
 		if (Character.isSupplementaryCodePoint(cp)) {
-			// Emoji gibi U+FFFF ustu karakterler: (char) kirpiyordu; Chromium UTF-16 ciftini iki CHAR olayindan birlestirir
+			// Characters above U+FFFF such as emoji: (char) used to truncate them; Chromium reassembles the UTF-16 pair from two CHAR events
 			char hi = Character.highSurrogate(cp);
 			char lo = Character.lowSurrogate(cp);
 			sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, hi, hi, 0));
@@ -423,7 +423,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		sendKeyEvent(new CefKeyEvent(CefKeyEvent.KEY_TYPE, c, c, 0));
 	}
 
-	// ---- doku ----
+	// ---- texture ----
 
 	@Override
 	@Nullable
@@ -442,7 +442,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		return this;
 	}
 
-	// ---- kare hizi + performans sayaclari ----
+	// ---- frame rate + performance counters ----
 	private volatile int frameRate = clampFps(com.doomscroll.cef.api.CefLaunchOptions.frameRate);
 	private long perfPaints = 0L;
 	private long perfBytes = 0L;
@@ -453,7 +453,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		return Math.max(1, Math.min(60, fps));
 	}
 
-	/** Tarayici acilirken: CEF varsayilani 30 fps; biz CefLaunchOptions.frameRate (varsayilan 60). */
+	/** At browser creation: the CEF default is 30 fps; we use CefLaunchOptions.frameRate (default 60). */
 	private static org.cef.CefBrowserSettings frameRateSettings() {
 		org.cef.CefBrowserSettings st = new org.cef.CefBrowserSettings();
 		st.windowless_frame_rate = clampFps(com.doomscroll.cef.api.CefLaunchOptions.frameRate);
@@ -473,8 +473,8 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		try {
 			setWindowlessFrameRate(f);
 		} catch (Throwable e) {
-			frameRateBroken = true; // JNI yoksa/bozuksa bir daha deneme
-			CefNatives.LOGGER.warn("kare hizi ayarlanamadi (dinamik kare hizi kapatildi)", e);
+			frameRateBroken = true; // JNI missing/broken: do not try again
+			CefNatives.LOGGER.warn("could not set frame rate (dynamic frame rate disabled)", e);
 		}
 	}
 
@@ -482,7 +482,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	public String perfInfo() {
 		long now = System.nanoTime();
 		double sec = Math.max(1e-3, (now - perfStart) / 1e9);
-		String out = String.format(java.util.Locale.ROOT, "%d fps ayari · %.0f boya/sn · %.1f MB/sn · yukleme %.1f ms/sn · %s",
+		String out = String.format(java.util.Locale.ROOT, "%d fps setting · %.0f paints/s · %.1f MB/s · upload %.1f ms/s · %s",
 				frameRate, perfPaints / sec, perfBytes / 1048576.0 / sec, perfUploadNanos / 1e6 / sec, audioInfo());
 		perfPaints = 0L;
 		perfBytes = 0L;
@@ -492,10 +492,10 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	}
 
 	/**
-	 * CEF boyama geri cagrisi. Mesaj dongusu render is parcaciginda pompalandigi icin burasi da render
-	 * is parcacigidir ve GL baglami hazirdir: kopya almadan, yalnizca degisen dikdortgenler dogrudan CEF'in
-	 * tamponundan dokuya yuklenir (eski yol: her boyamada tam kare kopyala + tam kare yukle).
-	 * Baska bir is parcacigindan gelirse (guvenlik icin) eski tam-kare yolu kullanilir.
+	 * CEF paint callback. Because the message loop is pumped on the render thread, this is the render thread
+	 * too and the GL context is ready: without taking a copy, only the dirty rectangles are uploaded to the texture
+	 * straight from CEF's buffer (old path: copy the full frame + upload the full frame on every paint).
+	 * If it arrives from another thread, the old full-frame path is used (to be safe).
 	 */
 	@Override
 	public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
@@ -509,8 +509,8 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 				uploadDirect(dirtyRects, buffer, width, height);
 				return;
 			} catch (Throwable e) {
-				directBroken = true; // guvenli yola dus: tam kare kopya
-				CefNatives.LOGGER.warn("dogrudan doku yukleme basarisiz, tam kare kopya yoluna donuldu", e);
+				directBroken = true; // fall back to the safe path: full-frame copy
+				CefNatives.LOGGER.warn("direct texture upload failed, fell back to the full-frame copy path", e);
 			}
 		}
 		ByteBuffer copy = MemoryUtil.memAlloc(buffer.capacity());
@@ -518,7 +518,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		Minecraft.getInstance().submit(() -> upload(copy, width, height));
 	}
 
-	/** Doku yoksa ya da boyutu degistiyse yeniden olusturur; olusturduysa true (tam kare yuklenmeli). */
+	/** Recreates the texture if it is missing or its size changed; true if it was created (a full frame must then be uploaded). */
 	private boolean ensureTexture(int width, int height) {
 		if (texture != null && texture.getWidth(0) == width && texture.getHeight(0) == height) {
 			return false;
@@ -542,7 +542,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		}
 		long need = (long) width * height * 4L;
 		if (buffer.capacity() < need) {
-			return; // beklenmeyen tampon boyutu
+			return; // unexpected buffer size
 		}
 		int[] saved = bindForUpload(((GlTexture) texture).glId());
 		try {
@@ -569,7 +569,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			}
 		}
 		} finally {
-			// Diger yuklemeleri etkilemesin; onceki doku baglamasi ve birim geri gelsin
+			// Must not affect other uploads; restore the previous texture binding and unit
 			GlStateManager._pixelStore(GlConst.GL_UNPACK_SKIP_PIXELS, 0);
 			GlStateManager._pixelStore(GlConst.GL_UNPACK_SKIP_ROWS, 0);
 			GlStateManager._pixelStore(GlConst.GL_UNPACK_ROW_LENGTH, 0);
@@ -579,11 +579,11 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	}
 
 	/**
-	 * Yukleme icin dokuyu HAM GL ile baglar. GlStateManager._bindTexture onbellekli: Minecraft 26.x'in kendi
-	 * cizim yolu dokulari GlStateManager'a ugramadan (GL33C.glBindTexture) baglar; onbellek "bizim doku bagli"
-	 * derken gercekte atlas bagliyken _bindTexture atlanir ve kare ATLASA yazilirdi (esyalar/bloklar bozuk ya da
-	 * gorunmez olurdu). Onceki baglama ve etkin doku birimi geri yuklenir.
-	 * @return {onceki etkin birim, onceki GL_TEXTURE_2D baglamasi}
+	 * Binds the texture for upload with RAW GL. GlStateManager._bindTexture is cached: Minecraft 26.x's own
+	 * draw path binds textures without going through GlStateManager (GL33C.glBindTexture); while the cache said
+	 * "our texture is bound" but the atlas was really bound, _bindTexture was skipped and the frame was written into the
+	 * ATLAS (items/blocks became corrupted or invisible). The previous binding and active texture unit are restored.
+	 * @return {previous active unit, previous GL_TEXTURE_2D binding}
 	 */
 	private static int[] bindForUpload(int id) {
 		int prevUnit = org.lwjgl.opengl.GL11.glGetInteger(org.lwjgl.opengl.GL13.GL_ACTIVE_TEXTURE);
@@ -598,7 +598,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		org.lwjgl.opengl.GL13.glActiveTexture(saved[0]);
 	}
 
-	/** Yedek yol (render is parcacigi disindan gelen boyama): tam kare, kopyadan. */
+	/** Fallback path (paint arriving from outside the render thread): full frame, from a copy. */
 	private void upload(ByteBuffer buf, int width, int height) {
 		try {
 			if (closed) {
@@ -640,12 +640,12 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		return true;
 	}
 
-	// ---- ekran isigi: kaba renk haritasi (ambilight) ----
+	// ---- screen light: coarse color map (ambilight) ----
 
 	private volatile float[] lightTiles;
 	private long lastLightNanos;
 
-	/** Kareyi seyrek ornekleyerek LIGHT_ROWS x LIGHT_COLS ortalama renk cikarir (~25 Hz, kare basina birkac bin piksel). */
+	/** Sparsely samples the frame into LIGHT_ROWS x LIGHT_COLS average colors (~25 Hz, a few thousand pixels per frame). */
 	private void sampleLight(ByteBuffer buffer, int width, int height) {
 		long now = System.nanoTime();
 		if (now - lastLightNanos < 40_000_000L || buffer.capacity() < width * height * 4) {
@@ -691,13 +691,13 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		return lightTiles;
 	}
 
-	// ---- surukle-birak: OSR'de sistem suruklemesi yok ----
+	// ---- drag and drop: no system drag in OSR ----
 
 	/**
-	 * Sayfa bir surukleme baslattiginda (gorsel/link/secili metin ustunde basili tutarken imlec kayinca) CEF, ana
-	 * uygulamanin sistem suruklemesini yapip bitirmesini bekler. Fork'un varsayilani hicbir sey yapmadan true donuyordu:
-	 * tarayici sonsuza dek "surukleme" modunda kaliyor ve o andan sonra tum fare tiklari yutuluyordu. Burada surukleme
-	 * aninda bitirilir (CEF belgesi: es zamanli cagri serbest).
+	 * When the page starts a drag (the cursor moves while holding down on an image/link/selected text), CEF expects the
+	 * host application to perform the system drag and finish it. The fork's default returned true without doing anything:
+	 * the browser stayed in "dragging" mode forever and every mouse click from then on was swallowed. Here the drag is
+	 * ended immediately (CEF docs: a synchronous call is allowed).
 	 */
 	@Override
 	public boolean startDragging(CefBrowser browser, org.cef.callback.CefDragData dragData, int mask, int x, int y) {
@@ -705,17 +705,17 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 			dragSourceEndedAt(new java.awt.Point(x, y), 0);
 			dragSourceSystemDragEnded();
 		} catch (Throwable t) {
-			CefNatives.LOGGER.warn("surukleme bitirilemedi", t);
+			CefNatives.LOGGER.warn("could not end drag", t);
 		}
 		return true;
 	}
 
-	// ---- kozmetik reklam filtreleri ----
+	// ---- cosmetic ad filters ----
 
-	/** cerceve kimligi -> son CSS uygulanan adres (yeniden yuklemede onLoadStart sifirlar). */
+	/** frame id -> URL the CSS was last applied for (onLoadStart resets it on reload). */
 	private final java.util.Map<String, String> cssApplied = new java.util.HashMap<>();
 
-	/** Cerceve yeni belge yuklemeye basladi: o cercevenin stil kaydini sil (null = hepsini). */
+	/** A frame started loading a new document: drop that frame's style record (null = all of them). */
 	void noteLoadStart(String frameId) {
 		synchronized (cssApplied) {
 			if (frameId == null) cssApplied.clear(); else cssApplied.remove(frameId);
@@ -770,11 +770,11 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 				}
 			}
 		} catch (Exception e) {
-			CefNatives.LOGGER.warn("kozmetik filtre uygulanamadi", e);
+			CefNatives.LOGGER.warn("could not apply cosmetic filters", e);
 		}
 	}
 
-	// ---- kapatma ----
+	// ---- close ----
 
 	@Override
 	public void close() {

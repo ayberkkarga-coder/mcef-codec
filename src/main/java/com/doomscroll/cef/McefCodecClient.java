@@ -8,10 +8,10 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 public class McefCodecClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
-		// Onceki cokmus oturumdan kalan Chromium yardimcilari
+		// Chromium helper processes left over from a previous crashed session
 		CefRuntime.killLingeringHelpers();
 
-		// Ikilileri indir + CEF'i baslat (asenkron)
+		// Download the binaries + start CEF (asynchronous)
 		CefService.initialize();
 
 		ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> {

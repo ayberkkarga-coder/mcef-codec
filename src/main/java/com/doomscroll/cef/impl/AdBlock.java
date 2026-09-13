@@ -17,16 +17,16 @@ import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Reklam engelleyici: gercek engelleyicilerin yaptigi gibi filtre listeleriyle calisir.
- *  - Ag: istek CEF'ten cikmadan once (onBeforeResourceLoad) {@link FilterEngine} kurallariyla iptal edilir
- *    (alan adi, yol kaliplari, tur/ucuncu-taraf/domain secenekleri, @@ istisnalar).
- *  - Kozmetik: listelerin ##secici kurallari her cerceveye stil olarak enjekte edilir ({@link OsrBrowser#applyCosmetics}).
- *  - Sayfanin baslattigi bahis/casino sitesine gecisler engellenir; adres cubugundan yazilan adres engellenmez.
+ * Ad blocker: works with filter lists, the way real blockers do.
+ *  - Network: a request is cancelled by {@link FilterEngine} rules before it leaves CEF (onBeforeResourceLoad)
+ *    (domain names, path patterns, type/third-party/domain options, @@ exceptions).
+ *  - Cosmetic: the lists' ##selector rules are injected into every frame as a style ({@link OsrBrowser#applyCosmetics}).
+ *  - Page-initiated navigations to betting/casino sites are blocked; an address typed into the address bar is not.
  *
- * Listeler (config/mcef-codec/adblock/, 7 gunde bir yenilenir):
+ * Lists (config/mcef-codec/adblock/, refreshed every 7 days):
  *  - EasyList (easylist.to)  - AdGuard Turkish filter (filters.adtidy.org, id 13)  - StevenBlack unified hosts
- *  - yerlesik cekirdek liste (indirme olmasa da).
- * YouTube'un kendi reklamlari ayni alan adindan geldigi icin burada degil, sayfa ici atlayici ile gecilir.
+ *  - built-in core list (available even without downloads).
+ * YouTube's own ads come from the same domain, so they are not handled here but skipped by the in-page skipper.
  */
 public final class AdBlock {
 	private static final Path DIR = CefNatives.DIR.resolve("adblock");
@@ -38,7 +38,7 @@ public final class AdBlock {
 	private static final String ADGUARD_TR_URL = "https://filters.adtidy.org/extension/ublock/filters/13.txt";
 	private static final long REFRESH_MS = 7L * 24 * 3600 * 1000;
 
-	/** Engellenmeyecekler: video/CDN alanlari (liste hatasi olursa oynatma bozulmasin). */
+	/** Never blocked: video/CDN domains (so a list error cannot break playback). */
 	private static final String[] ALLOW = {
 			"googlevideo.com", "ytimg.com", "youtube.com", "youtu.be", "ggpht.com", "gstatic.com", "googleapis.com",
 			"tiktokcdn.com", "tiktokcdn-us.com", "tiktokv.com", "tiktok.com", "ttwstatic.com", "byteoversea.com",
@@ -47,7 +47,7 @@ public final class AdBlock {
 			"jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "hcaptcha.com", "recaptcha.net"
 	};
 
-	/** Yerlesik cekirdek liste: indirme olmasa da en yaygin reklam/popup aglari. */
+	/** Built-in core list: the most common ad/popup networks, available even without downloads. */
 	private static final String[] CORE = {
 			"doubleclick.net", "googlesyndication.com", "googleadservices.com", "googletagservices.com", "googletagmanager.com",
 			"google-analytics.com", "adservice.google.com", "adnxs.com", "adsrvr.org", "taboola.com", "outbrain.com",
@@ -66,7 +66,7 @@ public final class AdBlock {
 			"admaven.com", "bemobtrcks.com", "linkvertise.com", "adf.ly", "shorte.st", "ouo.io", "clksite.com", "cpmstar.com"
 	};
 
-	/** Bahis/casino sitesi kalibi (film sitesi reklam linkleri): yalnizca sayfanin baslattigi, baska siteye giden gecislerde. */
+	/** Betting/casino site pattern (ad links on film sites): applied only to page-initiated navigations to another site. */
 	private static final java.util.regex.Pattern BET_HOST = java.util.regex.Pattern.compile(
 			"bahis|casino|kumar|jackpot|rulet|slotin|betorspin|betist|betine|baywin|meritbet|jetbahis|marsbahis|sekabet|matbet|holiganbet"
 			+ "|grandpashabet|casinomaxi|mobilbahis|bets10|betboo|superbetin|tipobet|restbet|piabet|betpas|onwin|hilbet|kralbet|betturkey"
@@ -75,7 +75,7 @@ public final class AdBlock {
 			java.util.regex.Pattern.CASE_INSENSITIVE);
 
 	private static volatile FilterEngine engine = coreEngine();
-	private static volatile String listSource = "yerlesik";
+	private static volatile String listSource = "built-in";
 	private static final AtomicLong blocked = new AtomicLong();
 	private static final AtomicLong logged = new AtomicLong();
 	private static volatile boolean started = false;
@@ -90,7 +90,7 @@ public final class AdBlock {
 		return e;
 	}
 
-	/** Listeleri diskten yukler, eskiyse/yoksa arka planda indirir. Bir kez cagrilir. */
+	/** Loads the lists from disk; downloads them in the background if stale or missing. Called once. */
 	public static synchronized void init() {
 		if (started) {
 			return;
@@ -117,10 +117,10 @@ public final class AdBlock {
 			if (!fresh(EASYLIST)) changed |= download(EASYLIST_URL, EASYLIST, "EasyList");
 			if (!fresh(ADGUARD_TR)) changed |= download(ADGUARD_TR_URL, ADGUARD_TR, "AdGuard Turkish");
 			if (changed || !any) {
-				rebuild("indirildi");
+				rebuild("downloaded");
 			}
 		} catch (Exception e) {
-			CefNatives.LOGGER.warn("reklam listesi yuklenemedi, yerlesik liste kullaniliyor: {}", e.toString());
+			CefNatives.LOGGER.warn("could not load ad lists, using the built-in list: {}", e.toString());
 		}
 	}
 
@@ -133,18 +133,18 @@ public final class AdBlock {
 			HttpResponse<Path> resp = http.send(req, HttpResponse.BodyHandlers.ofFile(tmp));
 			if (resp.statusCode() / 100 != 2) {
 				Files.deleteIfExists(tmp);
-				CefNatives.LOGGER.warn("reklam listesi {} indirilemedi: HTTP {}", name, resp.statusCode());
+				CefNatives.LOGGER.warn("could not download ad list {}: HTTP {}", name, resp.statusCode());
 				return false;
 			}
 			Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
 			return true;
 		} catch (Exception e) {
-			CefNatives.LOGGER.warn("reklam listesi {} indirilemedi: {}", name, e.toString());
+			CefNatives.LOGGER.warn("could not download ad list {}: {}", name, e.toString());
 			return false;
 		}
 	}
 
-	/** Tum kaynaklardan yeni bir motor kurar ve atomik olarak degistirir. */
+	/** Builds a new engine from all sources and swaps it in atomically. */
 	private static void rebuild(String source) throws IOException {
 		long t0 = System.nanoTime();
 		FilterEngine e = coreEngine();
@@ -160,7 +160,7 @@ public final class AdBlock {
 		}
 		engine = e;
 		listSource = source + "; hosts " + hosts + "; " + e.stats();
-		CefNatives.LOGGER.info("reklam filtreleri hazir ({} ms): {}", (System.nanoTime() - t0) / 1_000_000, listSource);
+		CefNatives.LOGGER.info("ad filters ready ({} ms): {}", (System.nanoTime() - t0) / 1_000_000, listSource);
 	}
 
 	private static int loadHosts(Path file, FilterEngine e) throws IOException {
@@ -200,10 +200,10 @@ public final class AdBlock {
 	}
 
 	/**
-	 * Bu istek engellensin mi?
-	 * @param cefType  CefRequest.ResourceType adi (RT_SCRIPT gibi)
-	 * @param mainFrame ana sayfa gecisi mi
-	 * @param pageUrl  istegi yapan sayfanin adresi (ana sayfa gecisinde: referrer)
+	 * Should this request be blocked?
+	 * @param cefType  CefRequest.ResourceType name (such as RT_SCRIPT)
+	 * @param mainFrame whether this is a main-frame navigation
+	 * @param pageUrl  URL of the page making the request (for a main-frame navigation: the referrer)
 	 */
 	public static boolean shouldBlock(String url, String cefType, boolean mainFrame, String pageUrl) {
 		if (!CefLaunchOptions.adBlock || url == null || !(url.startsWith("http://") || url.startsWith("https://"))) {
@@ -221,19 +221,19 @@ public final class AdBlock {
 		String pageHost = hostOf(pageUrl);
 		if (mainFrame) {
 			if (pageHost.isEmpty()) {
-				return false; // adres cubugu / ilk acilis: asla engelleme
+				return false; // address bar / initial load: never block
 			}
 			if (FilterEngine.sameSite(host, pageHost)) {
-				return false; // sitenin kendi sayfalari
+				return false; // the site's own pages
 			}
 			if (BET_HOST.matcher(host).find()) {
-				count("bahis sitesine yonlendirme", host);
+				count("redirect to betting site", host);
 				return true;
 			}
 		}
 		boolean block = engine.shouldBlock(url, typeBitOf(cefType), host, pageHost);
 		if (block) {
-			count(mainFrame ? "sayfa yonlendirmesi" : "", host + pathOf(url));
+			count(mainFrame ? "page redirect" : "", host + pathOf(url));
 		}
 		return block;
 	}
@@ -241,13 +241,13 @@ public final class AdBlock {
 	private static void count(String what, String host) {
 		long n = blocked.incrementAndGet();
 		if (logged.incrementAndGet() <= 20) {
-			CefNatives.LOGGER.info("[reklam] engellendi{}: {}", what.isEmpty() ? "" : " (" + what + ")", host);
+			CefNatives.LOGGER.info("[adblock] blocked{}: {}", what.isEmpty() ? "" : " (" + what + ")", host);
 		} else if (n % 500 == 0) {
-			CefNatives.LOGGER.info("[reklam] toplam {} istek engellendi", n);
+			CefNatives.LOGGER.info("[adblock] {} requests blocked in total", n);
 		}
 	}
 
-	/** Sayfa alan adi icin kozmetik gizleme CSS'i ("" = yok). */
+	/** Cosmetic element-hiding CSS for a page's domain ("" = none). */
 	public static String cosmeticCss(String host) {
 		if (!CefLaunchOptions.adBlock || host == null || host.isEmpty()) {
 			return "";
@@ -255,7 +255,7 @@ public final class AdBlock {
 		return engine.cosmeticCss(host);
 	}
 
-	/** Log icin kisaltilmis yol (sorgu atilir). */
+	/** Shortened path for logging (query string dropped). */
 	private static String pathOf(String url) {
 		int i = url.indexOf("://");
 		if (i < 0) return "";
@@ -289,6 +289,6 @@ public final class AdBlock {
 	}
 
 	public static String info() {
-		return (CefLaunchOptions.adBlock ? "acik" : "kapali") + " · " + listSource + " · " + blocked.get() + " istek engellendi";
+		return (CefLaunchOptions.adBlock ? "on" : "off") + " · " + listSource + " · " + blocked.get() + " requests blocked";
 	}
 }

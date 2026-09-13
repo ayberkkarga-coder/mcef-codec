@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * CEF yasam dongusu: ikilileri indir (arka plan) -> render is parcaciginda baslat -> her karede pompala -> kapat.
+ * CEF life cycle: download the binaries (background) -> start on the render thread -> pump every frame -> shut down.
  */
 public final class CefRuntime implements CefService {
 	/**
@@ -46,12 +46,12 @@ public final class CefRuntime implements CefService {
 	private final List<OsrBrowser> browsers = new java.util.concurrent.CopyOnWriteArrayList<>();
 	private static final List<OsrBrowser> ALL_BROWSERS = new java.util.concurrent.CopyOnWriteArrayList<>();
 
-	/** Basarisiz kaynak yuklemelerini (HTTP >= 400 ya da ag hatasi) loglar; site neden oynatmiyor teshisi icin. */
+	/** Logs failed resource loads (HTTP >= 400 or a network error); for diagnosing why a site does not play. */
 	private static final org.cef.handler.CefResourceRequestHandlerAdapter RESOURCE_LOGGER = new org.cef.handler.CefResourceRequestHandlerAdapter() {
-		/** Calisma zamaninda kimlik degisimi: User-Agent basligini degistirir, Chromium Client-Hints basliklarini siler (yeniden baslatma gerekmez). */
+		/** Runtime identity switch: replaces the User-Agent header and strips the Chromium Client-Hints headers (no restart needed). */
 		@Override
 		public boolean onBeforeResourceLoad(org.cef.browser.CefBrowser browser, org.cef.browser.CefFrame frame, org.cef.network.CefRequest request) {
-			// Reklam filtreleri (EasyList/AdGuard/hosts): istek hic cikmasin
+			// Ad filters (EasyList/AdGuard/hosts): the request must never go out
 			org.cef.network.CefRequest.ResourceType rtype = request.getResourceType();
 			boolean mainFrame = rtype == org.cef.network.CefRequest.ResourceType.RT_MAIN_FRAME;
 			String pageUrl = mainFrame ? request.getReferrerURL() : (frame != null ? frame.getURL() : request.getReferrerURL());
@@ -101,10 +101,10 @@ public final class CefRuntime implements CefService {
 	}
 
 	/**
-	 * Ekranlarin paylastigi gecici istek baglami: cerezler bellekte kalir, diske yazilmaz.
-	 * Ekran basina ayri baglam verilebilirdi ama CEF her baglam icin ayri bir render sureci
-	 * acar; onlarca ekranda bu makineyi dize getirir. Tek ortak gecici baglam,
-	 * "tabletimdeki oturumum baskasinin actigi sayfayla karismasin" isini goruyor.
+	 * Ephemeral request context shared by the screens: cookies stay in memory, nothing is written to disk.
+	 * Each screen could have had its own context, but CEF spawns a separate render process per
+	 * context; with dozens of screens that brings the machine to its knees. One shared ephemeral context
+	 * is enough for "my session on my tablet must not mix with a page someone else opened".
 	 */
 	private static volatile org.cef.browser.CefRequestContext ephemeralContext;
 
@@ -117,7 +117,7 @@ public final class CefRuntime implements CefService {
 					try {
 						c = org.cef.browser.CefRequestContext.createContext(null);
 					} catch (Throwable t) {
-						CefNatives.LOGGER.warn("gecici istek baglami olusturulamadi, ortak profil kullanilacak: {}", t.toString());
+						CefNatives.LOGGER.warn("could not create ephemeral request context, the shared profile will be used: {}", t.toString());
 						c = null;
 					}
 					ephemeralContext = c;
@@ -132,8 +132,8 @@ public final class CefRuntime implements CefService {
 		OsrBrowser b = new OsrBrowser(this, client, url, transparent, ephemeral ? ephemeralContext() : null);
 		b.setCloseAllowed();
 		b.createImmediately();
-		// CEF, "gizli" saydigi OSR tarayicisinda icerigi rasterlestirmez (sadece arka plan).
-		// Her tarayiciyi acikca gorunur isaretle ki metin/video cizilsin.
+		// CEF does not rasterize content in an OSR browser it considers "hidden" (background only).
+		// Mark every browser explicitly visible so that text/video gets drawn.
 		b.setWindowVisibility(true);
 		b.resize(1280, 720);
 		synchronized (browsers) {
@@ -143,10 +143,10 @@ public final class CefRuntime implements CefService {
 		return b;
 	}
 
-	/** Tum calisan runtime'lardaki tarayicilar arasinda CefBrowser esini bulur (ses handler'i icin). */
+	/** Finds the matching CefBrowser among the browsers of all running runtimes (for the audio handler). */
 	static @Nullable OsrBrowser findBrowser(org.cef.browser.CefBrowser browser) {
 		if (browser == null) {
-			return null; // kapanan tarayicinin son ses geri cagrilari null gelebiliyor
+			return null; // the last audio callbacks of a closing browser can arrive with null
 		}
 		for (OsrBrowser b : ALL_BROWSERS) {
 			if (b == browser || b.getIdentifier() == browser.getIdentifier()) {
@@ -167,7 +167,7 @@ public final class CefRuntime implements CefService {
 	private long pumps = 0L;
 	private long perfStart = System.nanoTime();
 
-	/** Iki adresin kayitli alan adi (son iki etiket) ayni mi? Bos/gecersiz adreste false. */
+	/** Do two URLs share the same registered domain (last two labels)? False for an empty/invalid URL. */
 	static boolean sameSite(String a, String b) {
 		String ha = hostOf(a), hb = hostOf(b);
 		if (ha.isEmpty() || hb.isEmpty()) return false;
@@ -206,7 +206,7 @@ public final class CefRuntime implements CefService {
 	public String perfInfo() {
 		long now = System.nanoTime();
 		double sec = Math.max(1e-3, (now - perfStart) / 1e9);
-		String out = String.format(java.util.Locale.ROOT, "CEF pompa (boyama+olaylar, render is parcacigi): %.2f ms/kare, %.0f kare/sn, %d tarayici",
+		String out = String.format(java.util.Locale.ROOT, "CEF pump (painting+events, render thread): %.2f ms/frame, %.0f frames/s, %d browsers",
 				pumps == 0 ? 0.0 : pumpNanos / 1e6 / pumps, pumps / sec, ALL_BROWSERS.size());
 		pumpNanos = 0L;
 		pumps = 0L;
@@ -214,7 +214,7 @@ public final class CefRuntime implements CefService {
 		return out;
 	}
 
-	/** Oyun kapanirken: tarayicilari kapat, CEF'i durdur, artik jcef_helper kalmasin. */
+	/** On game exit: close the browsers, stop CEF, leave no jcef_helper behind. */
 	public static void shutdown() {
 		CefRuntime r = instance;
 		if (r == null) {
@@ -236,11 +236,11 @@ public final class CefRuntime implements CefService {
 			r.client.dispose();
 			r.app.dispose();
 		} catch (Exception e) {
-			CefNatives.LOGGER.warn("CEF kapatilirken hata", e);
+			CefNatives.LOGGER.warn("error while shutting down CEF", e);
 		}
 	}
 
-	/** Windows: cokmus/askida kalan jcef_helper surecleri (MCEF 2.x ile ayni yaklasim). */
+	/** Windows: crashed/hung jcef_helper processes (same approach as MCEF 2.x). */
 	public static void killLingeringHelpers() {
 		if (!CefNatives.platform().startsWith("windows")) {
 			return;
@@ -258,30 +258,30 @@ public final class CefRuntime implements CefService {
 				}
 			}
 			if (running) {
-				CefNatives.LOGGER.warn("jcef_helper.exe hala calisiyor, kapatiliyor");
+				CefNatives.LOGGER.warn("jcef_helper.exe is still running, killing it");
 				new ProcessBuilder("taskkill", "/F", "/IM", "jcef_helper.exe").start();
 			}
 		} catch (Exception e) {
-			CefNatives.LOGGER.warn("jcef_helper kontrolu basarisiz", e);
+			CefNatives.LOGGER.warn("jcef_helper check failed", e);
 		}
 	}
 
-	/** Render is parcaciginda calisir. */
+	/** Runs on the render thread. */
 	private static CefRuntime startCef() {
 		System.setProperty("jcef.path", CefNatives.platformDir().toAbsolutePath().toString());
 
-		// GPU ACIK (CinemaMod gibi). Asil siyah-ekran sebebi GPU degil, kare akmamasiydi;
-		// onu driveFrames()/invalidate() cozuyor. GPU'nun rasterlestiricisi metin/resim/video'yu cizer.
-		// CinemaMod/MCEF ile ayni ayar seti (bu binariler onlarla calisiyor).
+		// GPU ON (like CinemaMod). The real cause of the black screen was not the GPU but frames not flowing;
+		// driveFrames()/invalidate() fixes that. The GPU rasterizer draws text/images/video.
+		// Same switch set as CinemaMod/MCEF (these binaries work with them).
 		String[] switches = new String[]{
 				"--autoplay-policy=no-user-gesture-required",
 				"--enable-widevine-cdm",
-				"--disable-blink-features=AutomationControlled" // Google "guvenli degil" engeli icin otomasyon izini kapat
+				"--disable-blink-features=AutomationControlled" // hide the automation trace to get past Google's "not secure" block
 		};
-		// Dal 6478 derlemesindeki bozuk export adini DLL yuklenmeden once duzelt (idempotent)
+		// Fix the broken export name in the branch 6478 build before the DLL is loaded (idempotent)
 		PeExportFix.apply(CefNatives.platformDir().resolve("jcef.dll"));
 		if (!CefApp.startup(switches)) {
-			throw new IllegalStateException("CefApp.startup basarisiz");
+			throw new IllegalStateException("CefApp.startup failed");
 		}
 
 		org.cef.CefApp.addAppHandler(new org.cef.handler.CefAppHandlerAdapter(switches) {
@@ -292,7 +292,7 @@ public final class CefRuntime implements CefService {
 
 			@Override
 			public void onRegisterCustomSchemes(org.cef.callback.CefSchemeRegistrar registrar) {
-				// doomscroll://home/... yerel sayfalar (ana menu): standart, guvenli, CORS + fetch acik
+				// doomscroll://home/... local pages (main menu): standard, secure, CORS + fetch enabled
 				registrar.addCustomScheme("doomscroll", true, false, false, true, true, false, true);
 			}
 
@@ -309,19 +309,19 @@ public final class CefRuntime implements CefService {
 		settings.log_severity = CefSettings.LogSeverity.LOGSEVERITY_INFO;
 		settings.cache_path = CefNatives.CACHE.toAbsolutePath().toString();
 		settings.background_color = settings.new ColorType(255, 0, 0, 0);
-		// user_agent_product bilerek bos: "MCEF/2" eki bazi CDN bot filtrelerine takiliyordu (script 403)
+		// user_agent_product deliberately empty: the "MCEF/2" suffix tripped some CDN bot filters (script 403)
 		String ua = com.doomscroll.cef.api.CefLaunchOptions.userAgent;
 		if (ua != null && !ua.isBlank()) {
 			settings.user_agent = ua;
 		}
 
-		AdBlock.init(); // reklam listesi (disk/indirme) arka planda
+		AdBlock.init(); // ad lists (disk/download) in the background
 		CefApp app = CefApp.getInstance(switches, settings);
 		CefClient client = app.createClient();
 		client.addDisplayHandler(new CefDisplayHandlerAdapter() {
 			@Override
 			public boolean onConsoleMessage(org.cef.browser.CefBrowser browser, CefSettings.LogSeverity level, String message, String source, int line) {
-				// Sayfa -> Java mesaj kanali (durum raporu vb.)
+				// Page -> Java message channel (status reports etc.)
 				if (message != null && message.startsWith("__DSB__")) {
 					OsrBrowser b = findBrowser(browser);
 					if (b != null) {
@@ -336,14 +336,14 @@ public final class CefRuntime implements CefService {
 					}
 					return true;
 				}
-				// Sayfa icindeki izleyici (doomscroll otomatik gecis) sonraki video istedi -> guvenilir ok tusu gonder
+				// The in-page watcher (doomscroll auto-advance) asked for the next video -> send a trusted arrow key
 				if ("__DS_NEXT__".equals(message)) {
-					CefNatives.LOGGER.info("otomatik gecis: sonraki video (sayfa ici)");
+					CefNatives.LOGGER.info("auto-advance: next video (in-page)");
 					return true;
 				}
-				// Uyari/hatalari MC log'una yaz (site neden oynatmiyor gibi sorunlarda tek ipucu bu)
+				// Write warnings/errors to the MC log (the only clue for problems like "why does the site not play")
 				if (message != null && message.contains("frame is sandboxed")) {
-					return true; // reklam iframe'lerinin sandbox uyarisi: gurultu
+					return true; // sandbox warning from ad iframes: noise
 				}
 				if (level == CefSettings.LogSeverity.LOGSEVERITY_ERROR || level == CefSettings.LogSeverity.LOGSEVERITY_WARNING || level == CefSettings.LogSeverity.LOGSEVERITY_FATAL) {
 					String src = source == null ? "" : source;
@@ -355,17 +355,17 @@ public final class CefRuntime implements CefService {
 
 			@Override
 			public void onFullscreenModeChange(org.cef.browser.CefBrowser browser, boolean fullscreen) {
-				// OSR'de pencere yok; sayfa kendi icinde tam ekran duzenine gecer (video gorunumu kaplar)
-				CefNatives.LOGGER.info("[fullscreen] sayfa tam ekran: {}", fullscreen);
+				// No window in OSR; the page switches to its own fullscreen layout (the video fills the view)
+				CefNatives.LOGGER.info("[fullscreen] page fullscreen: {}", fullscreen);
 			}
 		});
-		// Yeni pencere/popup: OSR'de acilamaz. Ayni sitedeki hedef ayni tarayicida acilir, yabanci (reklam) engellenir.
+		// New window/popup: cannot be opened in OSR. A same-site target opens in the same browser, a foreign one (ad) is blocked.
 		client.addLifeSpanHandler(new org.cef.handler.CefLifeSpanHandlerAdapter() {
 			@Override
 			public boolean onBeforePopup(org.cef.browser.CefBrowser browser, org.cef.browser.CefFrame frame, String targetUrl, String targetFrameName) {
-				// Hicbir popup kendiliginden acilmaz (film sitelerinde ayni siteden yonlendirme de reklam olabiliyor).
-				// Adres dinleyen tarafa bildirilir; istenirse komutla acilir.
-				CefNatives.LOGGER.info("[popup] engellendi: {}", targetUrl);
+				// No popup opens on its own (on film sites even a same-site redirect can be an ad).
+				// The URL is reported to the listener; it can be opened by command if wanted.
+				CefNatives.LOGGER.info("[popup] blocked: {}", targetUrl);
 				OsrBrowser b = findBrowser(browser);
 				if (b != null && targetUrl != null && !targetUrl.isEmpty()) {
 					String esc = targetUrl.replace("\\", "\\\\").replace("\"", "\\\"");
@@ -402,22 +402,22 @@ public final class CefRuntime implements CefService {
 				return RESOURCE_LOGGER;
 			}
 		});
-		// Ses: CEF sesi isletim sistemine degil bize verir; biz Minecraft ses motoruna (OpenAL) besleriz.
-		// Boylece Sound Physics gibi modlar (duvar/su alti/yanki) ve 3B konumsal ses calisir.
+		// Audio: CEF hands the audio to us instead of the operating system; we feed it to the Minecraft sound engine (OpenAL).
+		// That way mods like Sound Physics (walls/underwater/echo) and 3D positional audio work.
 		client.addAudioHandler(new org.cef.handler.CefAudioHandlerAdapter() {
 			@Override
 			public boolean getAudioParameters(org.cef.browser.CefBrowser browser, org.cef.misc.CefAudioParameters params) {
-				return true; // true = yakalamaya devam (false yakalamayi IPTAL eder); parametreler CEF varsayilani (48 kHz stereo)
+				return true; // true = keep capturing (false CANCELS the capture); parameters are the CEF defaults (48 kHz stereo)
 			}
 
 			@Override
 			public void onAudioStreamStarted(org.cef.browser.CefBrowser browser, org.cef.misc.CefAudioParameters params, int channels) {
 				OsrBrowser b = findBrowser(browser);
 				if (b != null) {
-					// Fork'un JNI'si params'i null gecirebiliyor; hiz 0 kalirsa ilk paketten turetilir (10 ms paket -> frames*100)
+					// The fork's JNI may pass params as null; if the rate stays 0 it is derived from the first packet (10 ms packet -> frames*100)
 					int rate = params == null ? 0 : params.sampleRate;
 					b.audioStarted(rate, channels);
-					CefNatives.LOGGER.info("ses akisi basladi: {} Hz (0=paketten), {} kanal", rate, channels);
+					CefNatives.LOGGER.info("audio stream started: {} Hz (0=from packet), {} channels", rate, channels);
 				}
 			}
 
@@ -439,13 +439,13 @@ public final class CefRuntime implements CefService {
 
 			@Override
 			public void onAudioStreamError(org.cef.browser.CefBrowser browser, String text) {
-				CefNatives.LOGGER.warn("ses akisi hatasi: {}", text);
+				CefNatives.LOGGER.warn("audio stream error: {}", text);
 			}
 		});
 		return new CefRuntime(app, client);
 	}
 
-	/** Asenkron kurulum durumu. */
+	/** Asynchronous setup state. */
 	private static final class Init implements Initialization {
 		private volatile Stage stage = Stage.NOT_STARTED;
 		private volatile float pct = -1f;
@@ -467,15 +467,15 @@ public final class CefRuntime implements CefService {
 							instance = r;
 							stage = Stage.DONE;
 							future.complete(r);
-							CefNatives.LOGGER.info("CEF hazir (codec'li java-cef {})", CefNatives.JAVA_CEF_COMMIT.substring(0, 7));
+							CefNatives.LOGGER.info("CEF ready (java-cef with codecs {})", CefNatives.JAVA_CEF_COMMIT.substring(0, 7));
 						} catch (Throwable e) {
-							CefNatives.LOGGER.error("CEF baslatilamadi", e);
+							CefNatives.LOGGER.error("could not start CEF", e);
 							stage = Stage.FAILED;
 							future.completeExceptionally(e);
 						}
 					});
 				} catch (Throwable e) {
-					CefNatives.LOGGER.error("CEF ikilileri hazirlanamadi", e);
+					CefNatives.LOGGER.error("could not prepare CEF binaries", e);
 					stage = Stage.FAILED;
 					future.completeExceptionally(e);
 				}

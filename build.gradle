@@ -18,7 +18,7 @@ dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-	// Minecraft'in kendi kutuphanesi (tar.gz acmak icin); calisma zamaninda oyunla gelir
+	// Minecraft's own library (for extracting tar.gz); ships with the game at runtime
 	compileOnly "org.apache.commons:commons-compress:1.28.0"
 }
 
@@ -33,11 +33,11 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 	it.options.encoding = "UTF-8"
-	// java-cef fork eski kod; uyarilar hata olmasin
+	// java-cef fork is old code; warnings must not become errors
 	it.options.compilerArgs.addAll(["-Xlint:none", "-nowarn"])
 }
 
-// LGPL geregi lisans metinleri jar'in icinde de bulunmali
+// Required by the LGPL: the license texts must be inside the jar as well
 jar {
 	from("LICENSE") { rename { "META-INF/LICENSE" } }
 	from("COPYING.LESSER") { rename { "META-INF/COPYING.LESSER" } }
