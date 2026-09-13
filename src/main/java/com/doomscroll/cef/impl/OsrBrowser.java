@@ -670,7 +670,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 	private volatile float[] lightTiles;
 	private long lastLightNanos;
 
-	/** Sparsely samples the frame into LIGHT_ROWS x LIGHT_COLS average colors (~25 Hz, a few thousand pixels per frame). */
+	/** Samples the frame into LIGHT_ROWS x LIGHT_COLS average colors (~25 Hz, about 280 pixels per tile: a sparser grid made the averages jump with subtitles and film grain). */
 	private void sampleLight(ByteBuffer buffer, int width, int height) {
 		long now = System.nanoTime();
 		if (now - lastLightNanos < 40_000_000L || buffer.capacity() < width * height * 4) {
@@ -682,7 +682,7 @@ final class OsrBrowser extends CefBrowserOsr implements CefBrowserView {
 		if (tw < 2 || th < 2) {
 			return;
 		}
-		int sx = Math.max(1, tw / 10), sy = Math.max(1, th / 8);
+		int sx = Math.max(1, tw / 20), sy = Math.max(1, th / 14);
 		int stride = width * 4;
 		float[] out = new float[cols * rows * 3];
 		for (int r = 0; r < rows; r++) {
